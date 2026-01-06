@@ -1,0 +1,73 @@
+{
+    "id": "strongswan",
+    "name": "IPsec VPN Manager",
+    "version": "0.1.0",
+    "description": "Site-to-Site IPsec VPN management with strongSwan, IKEv1/IKEv2 support, and FortiGate-style configuration",
+    "author": "MADMIN Team",
+    "system_dependencies": {
+        "apt": [
+            "strongswan",
+            "strongswan-swanctl",
+            "strongswan-pki",
+            "libcharon-extauth-plugins"
+        ],
+        "pip": [
+            "vici"
+        ]
+    },
+    "database_migrations": [
+        "migrations/001_initial.py"
+    ],
+    "install_hooks": {
+        "pre_install": null,
+        "post_install": "hooks/post_install.py",
+        "pre_uninstall": "hooks/pre_uninstall.py",
+        "post_uninstall": null,
+        "pre_update": null,
+        "post_update": "hooks/post_update.py"
+    },
+    "backend_router": "router.py",
+    "static_dir": "static",
+    "frontend_entry": "views/main.js",
+    "permissions": [
+        {
+            "slug": "ipsec.view",
+            "description": "Visualizza tunnel IPsec"
+        },
+        {
+            "slug": "ipsec.manage",
+            "description": "Crea/modifica tunnel IPsec"
+        }
+    ],
+    "menu": [
+        {
+            "label": "IPsec VPN",
+            "icon": "shield-lock",
+            "route": "#ipsec"
+        }
+    ],
+    "firewall_chains": [
+        {
+            "name": "MOD_IPSEC_INPUT",
+            "parent": "MADMIN_INPUT",
+            "priority": 40
+        },
+        {
+            "name": "MOD_IPSEC_FORWARD",
+            "parent": "MADMIN_FORWARD",
+            "priority": 40
+        }
+    ],
+    "backup": {
+        "external_paths": [
+            "/etc/swanctl/conf.d",
+            "/etc/swanctl/x509",
+            "/etc/swanctl/x509ca",
+            "/etc/swanctl/private"
+        ],
+        "restore_hooks": {
+            "post_restore": "hooks/post_restore.py"
+        }
+    },
+    "dependencies": []
+}
