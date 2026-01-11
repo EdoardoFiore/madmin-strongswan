@@ -42,19 +42,25 @@
     "menu": [
         {
             "label": "IPsec VPN",
-            "icon": "shield-lock",
+            "icon": "https://www.svgrepo.com/show/306809/strongswan.svg",
             "route": "#ipsec"
         }
     ],
     "firewall_chains": [
         {
             "name": "MOD_IPSEC_INPUT",
-            "parent": "MADMIN_INPUT",
+            "parent": "INPUT",
             "priority": 40
         },
         {
             "name": "MOD_IPSEC_FORWARD",
-            "parent": "MADMIN_FORWARD",
+            "parent": "FORWARD",
+            "priority": 40
+        },
+        {
+            "name": "MOD_IPSEC_NAT",
+            "parent": "POSTROUTING",
+            "table": "nat",
             "priority": 40
         }
     ],
