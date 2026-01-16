@@ -1,40 +1,33 @@
 /**
- * IPsec VPN Module - Frontend Entry Point
+ * IPsec VPN Module - Main Entry Point
  * 
- * Registers and initializes the IPsec VPN module with MADMIN.
+ * Routes between list and detail views based on URL hash.
  */
 
-// Module definition for MADMIN dynamic loading
-window.MADMIN_MODULE = {
-    id: 'strongswan',
-    name: 'IPsec VPN',
-    version: '0.1.0',
+import { checkPermission } from '/static/js/app.js';
+import { renderTunnelList } from '/static/modules/strongswan/views/tunnelList.js';
+import { renderTunnelDetail } from '/static/modules/strongswan/views/tunnelDetail.js';
 
-    // Initialize module
-    init: function () {
-        console.log('[IPsec] Module initialized');
-    },
-
-    // Render module content
-    render: function (container) {
-        // Load the main app
-        if (typeof IPsecApp !== 'undefined') {
-            IPsecApp.render(container);
-        } else {
-            // Load app.js dynamically
-            const script = document.createElement('script');
-            script.src = '/static/modules/strongswan/views/app.js';
-            script.onload = function () {
-                if (typeof IPsecApp !== 'undefined') {
-                    IPsecApp.render(container);
-                }
-            };
-            document.head.appendChild(script);
-        }
-    },
-
-    // Cleanup on module unload
-    destroy: function () {
-        console.log('[IPsec] Module destroyed');
-    }
+// Cache permissions
+let permissions = {
+    view: false,
+    manage: false
 };
+
+export async function render(container, params) {
+    // Check permissions
+    permissions = {
+        view: checkPermission('ipsec.view'),
+        manage: checkPermission('ipsec.manage')
+    };
+
+    // Route based on params
+    if (params && params.length > 0) {
+        // Detail view: #strongswan/{tunnelId}
+        const tunnelId = params[0];
+        await renderTunnelDetail(container, tunnelId, permissions);
+    } else {
+        // List view: #strongswan
+        await renderTunnelList(container, permissions);
+    }
+}

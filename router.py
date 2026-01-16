@@ -7,6 +7,7 @@ import logging
 from datetime import datetime
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.concurrency import run_in_threadpool
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -104,17 +105,17 @@ async def create_tunnel(
         nat_traversal=tunnel.nat_traversal,
         child_sas=[]  # No Child SAs yet
     )
-    strongswan_service.save_tunnel_config(tunnel.name, config)
+    await run_in_threadpool(strongswan_service.save_tunnel_config, tunnel.name, config)
     
     # Update secrets if PSK
     if tunnel.auth_method == "psk" and tunnel.psk:
         await _update_all_secrets(db)
     
     # Setup base INPUT rules for IPsec traffic
-    strongswan_service.setup_ipsec_input_rules()
+    await run_in_threadpool(strongswan_service.setup_ipsec_input_rules)
     
     # Reload swanctl
-    strongswan_service.load_all_connections()
+    await run_in_threadpool(strongswan_service.load_all_connections)
     
     await db.commit()
     
@@ -149,6 +150,17 @@ async def get_tunnel(
     )
 
 
+@router.patch("/tunnels/{tunnel_id}", response_model=IpsecTunnelRead)
+async def patch_tunnel(
+    tunnel_id: str,
+    data: IpsecTunnelUpdate,
+    db: AsyncSession = Depends(get_session),
+    _user: User = Depends(require_permission("ipsec.manage"))
+):
+    """Partially update an IPsec tunnel."""
+    return await update_tunnel(tunnel_id, data, db, _user)
+
+
 @router.put("/tunnels/{tunnel_id}", response_model=IpsecTunnelRead)
 async def update_tunnel(
     tunnel_id: str,
@@ -178,8 +190,8 @@ async def update_tunnel(
     
     # If name changed, delete old config file
     if data.name and data.name != old_name:
-        strongswan_service.delete_tunnel_config(old_name)
-        strongswan_service.flush_tunnel_forward_rules(old_name)
+        await run_in_threadpool(strongswan_service.delete_tunnel_config, old_name)
+        await run_in_threadpool(strongswan_service.flush_tunnel_forward_rules, old_name)
     
     # Regenerate configuration
     child_sas_data = [
@@ -211,14 +223,14 @@ async def update_tunnel(
         nat_traversal=tunnel.nat_traversal,
         child_sas=child_sas_data
     )
-    strongswan_service.save_tunnel_config(tunnel.name, config)
+    await run_in_threadpool(strongswan_service.save_tunnel_config, tunnel.name, config)
     
     # Update secrets
     if tunnel.auth_method == "psk":
         await _update_all_secrets(db)
     
     # Reload
-    strongswan_service.load_all_connections()
+    await run_in_threadpool(strongswan_service.load_all_connections)
     
     await db.commit()
     await db.refresh(tunnel)
@@ -247,13 +259,13 @@ async def delete_tunnel(
         raise HTTPException(status_code=404, detail="Tunnel not found")
     
     # Terminate if active
-    strongswan_service.terminate_tunnel(tunnel.name)
+    await run_in_threadpool(strongswan_service.terminate_tunnel, tunnel.name)
     
     # Remove config file
-    strongswan_service.delete_tunnel_config(tunnel.name)
+    await run_in_threadpool(strongswan_service.delete_tunnel_config, tunnel.name)
     
     # Remove firewall rules
-    strongswan_service.flush_tunnel_forward_rules(tunnel.name)
+    await run_in_threadpool(strongswan_service.flush_tunnel_forward_rules, tunnel.name)
     
     # Delete from DB (cascades to child_sas)
     await db.delete(tunnel)
@@ -263,7 +275,7 @@ async def delete_tunnel(
     await _update_all_secrets(db)
     
     # Reload
-    strongswan_service.load_all_connections()
+    await run_in_threadpool(strongswan_service.load_all_connections)
     
     logger.info(f"Deleted IPsec tunnel: {tunnel.name}")
     
@@ -287,16 +299,68 @@ async def start_tunnel(
     if not tunnel:
         raise HTTPException(status_code=404, detail="Tunnel not found")
     
-    # Reload configs first
-    strongswan_service.load_all_connections()
+    # Enable tunnel
+    tunnel.enabled = True
+    await db.commit()
     
-    # Initiate tunnel
-    success = strongswan_service.initiate_tunnel(tunnel.name)
+    # 1. Fetch children for config generation
+    result_children = await db.execute(select(IpsecChildSa).where(IpsecChildSa.tunnel_id == tunnel.id))
+    children = result_children.scalars().all()
+    
+    child_sas_data = [
+        {
+            "name": c.name,
+            "local_ts": c.local_ts,
+            "remote_ts": c.remote_ts,
+            "esp_proposal": c.esp_proposal,
+            "esp_lifetime": c.esp_lifetime,
+            "pfs_group": c.pfs_group,
+            "start_action": c.start_action,
+            "close_action": c.close_action
+        }
+        for c in children if c.enabled
+    ]
+    
+    # 2. Generate and Save Config
+    config = strongswan_service.generate_tunnel_config(
+        tunnel_id=tunnel.id,
+        name=tunnel.name,
+        ike_version=tunnel.ike_version,
+        local_address=tunnel.local_address,
+        remote_address=tunnel.remote_address,
+        local_id=tunnel.local_id,
+        remote_id=tunnel.remote_id,
+        auth_method=tunnel.auth_method,
+        ike_proposal=tunnel.ike_proposal,
+        ike_lifetime=tunnel.ike_lifetime,
+        dpd_action=tunnel.dpd_action,
+        dpd_delay=tunnel.dpd_delay,
+        nat_traversal=tunnel.nat_traversal,
+        child_sas=child_sas_data
+    )
+    
+    await run_in_threadpool(strongswan_service.save_tunnel_config, tunnel.name, config)
+
+    # 3. Reload configs
+    await run_in_threadpool(strongswan_service.load_all_connections)
+    
+    # 4. Initiate tunnel
+    # We use a timeout in initiate_tunnel, so if it returns True, it has started.
+    # It might already be up if it was fast.
+    success = await run_in_threadpool(strongswan_service.initiate_tunnel, tunnel.name)
     
     if success:
-        tunnel.status = "connecting"
+        # Check immediate status
+        real_status = await run_in_threadpool(strongswan_service.get_tunnel_status, tunnel.name)
+        if real_status and real_status["ike_state"] == "ESTABLISHED":
+            tunnel.status = "established"
+            status_response = "established"
+        else:
+            tunnel.status = "connecting"
+            status_response = "initiated"
+            
         await db.commit()
-        return {"status": "initiated", "name": tunnel.name}
+        return {"status": status_response, "name": tunnel.name}
     else:
         raise HTTPException(status_code=500, detail="Failed to initiate tunnel")
 
@@ -316,8 +380,17 @@ async def stop_tunnel(
     if not tunnel:
         raise HTTPException(status_code=404, detail="Tunnel not found")
     
-    strongswan_service.terminate_tunnel(tunnel.name)
+    # 1. Terminate active SA
+    await run_in_threadpool(strongswan_service.terminate_tunnel, tunnel.name)
     
+    # 2. Unload connection from runtime (prevents auto-response)
+    await run_in_threadpool(strongswan_service.unload_connection, tunnel.name)
+    
+    # 3. Delete config file (prevents loading on restart)
+    await run_in_threadpool(strongswan_service.delete_tunnel_config, tunnel.name)
+    
+    # 4. Update DB
+    tunnel.enabled = False
     tunnel.status = "disconnected"
     await db.commit()
     
@@ -339,7 +412,7 @@ async def get_tunnel_status(
     if not tunnel:
         raise HTTPException(status_code=404, detail="Tunnel not found")
     
-    status = strongswan_service.get_tunnel_status(tunnel.name)
+    status = await run_in_threadpool(strongswan_service.get_tunnel_status, tunnel.name)
     
     if status is None:
         raise HTTPException(status_code=500, detail="Failed to get tunnel status")
@@ -357,6 +430,31 @@ async def get_tunnel_status(
         tunnel_id=tunnel.id,
         **status
     )
+
+
+@router.get("/tunnels/{tunnel_id}/logs")
+async def get_tunnel_logs(
+    tunnel_id: str,
+    lines: int = 100,
+    db: AsyncSession = Depends(get_session),
+    _user: User = Depends(require_permission("ipsec.view"))
+):
+    """Get StrongSwan logs filtered by tunnel with error detection."""
+    result = await db.execute(
+        select(IpsecTunnel).where(IpsecTunnel.id == tunnel_id)
+    )
+    tunnel = result.scalar_one_or_none()
+    
+    if not tunnel:
+        raise HTTPException(status_code=404, detail="Tunnel not found")
+    
+    logs_data = await run_in_threadpool(strongswan_service.get_tunnel_logs, tunnel.name, lines)
+    
+    return {
+        "tunnel_id": tunnel.id,
+        "tunnel_name": tunnel.name,
+        **logs_data
+    }
 
 
 # --- CHILD SAs (Phase 2) ---
@@ -433,13 +531,13 @@ async def create_child_sa(
         nat_traversal=tunnel.nat_traversal,
         child_sas=child_sas_data
     )
-    strongswan_service.save_tunnel_config(tunnel.name, config)
+    await run_in_threadpool(strongswan_service.save_tunnel_config, tunnel.name, config)
     
     # Setup FORWARD rules
-    strongswan_service.setup_forward_rules(child.local_ts, child.remote_ts, tunnel.name)
+    await run_in_threadpool(strongswan_service.setup_forward_rules, child.local_ts, child.remote_ts, tunnel.name)
     
     # Reload
-    strongswan_service.load_all_connections()
+    await run_in_threadpool(strongswan_service.load_all_connections)
     
     await db.commit()
     
@@ -485,8 +583,8 @@ async def update_child_sa(
     
     # Remove old FORWARD rules if TS changed
     if data.local_ts or data.remote_ts:
-        strongswan_service.remove_forward_rules(old_local_ts, old_remote_ts)
-        strongswan_service.setup_forward_rules(child.local_ts, child.remote_ts, tunnel.name)
+        await run_in_threadpool(strongswan_service.remove_forward_rules, old_local_ts, old_remote_ts)
+        await run_in_threadpool(strongswan_service.setup_forward_rules, child.local_ts, child.remote_ts, tunnel.name)
     
     # Regenerate config
     child_sas_data = [
@@ -518,10 +616,10 @@ async def update_child_sa(
         nat_traversal=tunnel.nat_traversal,
         child_sas=child_sas_data
     )
-    strongswan_service.save_tunnel_config(tunnel.name, config)
+    await run_in_threadpool(strongswan_service.save_tunnel_config, tunnel.name, config)
     
     # Reload
-    strongswan_service.load_all_connections()
+    await run_in_threadpool(strongswan_service.load_all_connections)
     
     await db.commit()
     await db.refresh(child)
@@ -550,7 +648,7 @@ async def delete_child_sa(
         raise HTTPException(status_code=404, detail="Child SA not found")
     
     # Remove FORWARD rules
-    strongswan_service.remove_forward_rules(child.local_ts, child.remote_ts)
+    await run_in_threadpool(strongswan_service.remove_forward_rules, child.local_ts, child.remote_ts)
     
     # Get tunnel
     result = await db.execute(
@@ -595,10 +693,10 @@ async def delete_child_sa(
         nat_traversal=tunnel.nat_traversal,
         child_sas=child_sas_data
     )
-    strongswan_service.save_tunnel_config(tunnel.name, config)
+    await run_in_threadpool(strongswan_service.save_tunnel_config, tunnel.name, config)
     
     # Reload
-    strongswan_service.load_all_connections()
+    await run_in_threadpool(strongswan_service.load_all_connections)
     
     await db.commit()
     
@@ -627,4 +725,4 @@ async def _update_all_secrets(db: AsyncSession):
             )
             secrets_entries.append(entry)
     
-    strongswan_service.update_secrets_file(secrets_entries)
+    await run_in_threadpool(strongswan_service.update_secrets_file, secrets_entries)

@@ -7,7 +7,27 @@ Supports multiple tunnels and multiple Child SAs per tunnel.
 from typing import Optional, List
 from datetime import datetime
 from sqlmodel import Field, SQLModel, Relationship
+from pydantic import field_validator
 import uuid
+import ipaddress
+
+
+def validate_cidr(value: str) -> str:
+    """Validate CIDR notation for traffic selectors."""
+    if not value:
+        raise ValueError("CIDR value cannot be empty")
+    
+    try:
+        # Support both single IP and network notation
+        if '/' in value:
+            ipaddress.ip_network(value, strict=False)
+        else:
+            # Single IP - treat as /32 or /128
+            ipaddress.ip_address(value)
+    except ValueError as e:
+        raise ValueError(f"Invalid CIDR notation '{value}': {str(e)}")
+    
+    return value
 
 
 class IpsecTunnel(SQLModel, table=True):
@@ -28,7 +48,7 @@ class IpsecTunnel(SQLModel, table=True):
     mode: str = Field(default="main")  # "main" or "aggressive" (IKEv1 only)
     
     # Addresses
-    local_address: str = Field(max_length=255)  # Local gateway IP
+    local_address: str = Field(default="", max_length=255)  # Local gateway IP (empty = %any)
     remote_address: str = Field(max_length=255)  # Remote peer IP or FQDN
     
     # Identity (optional)
@@ -105,7 +125,7 @@ class IpsecTunnelCreate(SQLModel):
     name: str
     ike_version: str = "2"
     mode: str = "main"
-    local_address: str
+    local_address: Optional[str] = ""
     remote_address: str
     local_id: Optional[str] = None
     remote_id: Optional[str] = None
@@ -170,6 +190,11 @@ class IpsecChildSaCreate(SQLModel):
     pfs_group: Optional[str] = "modp2048"
     start_action: str = "trap"
     close_action: str = "restart"
+    
+    @field_validator('local_ts', 'remote_ts')
+    @classmethod
+    def validate_traffic_selector(cls, v):
+        return validate_cidr(v)
 
 
 class IpsecChildSaUpdate(SQLModel):
@@ -183,6 +208,13 @@ class IpsecChildSaUpdate(SQLModel):
     start_action: Optional[str] = None
     close_action: Optional[str] = None
     enabled: Optional[bool] = None
+    
+    @field_validator('local_ts', 'remote_ts')
+    @classmethod
+    def validate_traffic_selector(cls, v):
+        if v is not None:
+            return validate_cidr(v)
+        return v
 
 
 class IpsecChildSaRead(SQLModel):

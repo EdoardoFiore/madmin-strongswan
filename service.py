@@ -262,13 +262,18 @@ connections {{
             child_name: Optional specific Child SA to initiate
         """
         conn_name = f"madmin_{name}"
-        args = ['--initiate', '--ike', conn_name]
+        args = ['--initiate', '--ike', conn_name, '--timeout', '5']
         if child_name:
             args.extend(['--child', child_name])
         
+        # We don't check return code strictly because timeout (which is expected if peer is down) causes non-zero exit
+        # Yet the initiation has started in background.
         result = self._run_swanctl(args)
         if result.returncode == 0:
             logger.info(f"Initiated tunnel {name}")
+            return True
+        elif any(x in (result.stderr + result.stdout).lower() for x in ["timeout", "not established after"]):
+            logger.warning(f"Initiate tunnel {name} timed out waiting for connection (background retry active)")
             return True
         else:
             logger.error(f"Failed to initiate tunnel {name}: {result.stderr}")
@@ -286,6 +291,22 @@ connections {{
             logger.info(f"Tunnel {name} termination result: {result.stderr.strip()}")
             return True
     
+    def unload_connection(self, name: str) -> bool:
+        """Unload connection from StrongSwan runtime."""
+        session = self._get_vici_session()
+        if not session:
+            return False
+            
+        conn_name = f"madmin_{name}"
+        try:
+            # unload_conn expects request dict with connection name
+            session.unload_conn({"name": conn_name})
+            logger.info(f"Unloaded connection {name}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to unload connection {name}: {e}")
+            return False
+
     def get_tunnel_status(self, name: str) -> Optional[Dict[str, Any]]:
         """
         Get real-time status of a tunnel via VICI.
@@ -303,39 +324,78 @@ connections {{
             # List Security Associations
             sas = list(session.list_sas())
             
+            # Find all matching SAs
+            matches = []
+            
             for sa in sas:
                 for ike_name, ike_data in sa.items():
-                    if ike_name == conn_name:
-                        # Found our tunnel
-                        state = ike_data.get(b'state', b'').decode('utf-8', errors='ignore')
-                        local_host = ike_data.get(b'local-host', b'').decode('utf-8', errors='ignore')
-                        remote_host = ike_data.get(b'remote-host', b'').decode('utf-8', errors='ignore')
-                        initiator = ike_data.get(b'initiator', b'no') == b'yes'
-                        established = int(ike_data.get(b'established', 0))
-                        rekey_time = int(ike_data.get(b'rekey-time', 0))
-                        
-                        # Get Child SAs
-                        child_sas = []
-                        children = ike_data.get(b'child-sas', {})
-                        for child_name, child_data in children.items():
-                            child_sas.append({
-                                "name": child_name.decode('utf-8', errors='ignore'),
-                                "state": child_data.get(b'state', b'').decode('utf-8', errors='ignore'),
-                                "bytes_in": int(child_data.get(b'bytes-in', 0)),
-                                "bytes_out": int(child_data.get(b'bytes-out', 0)),
-                                "packets_in": int(child_data.get(b'packets-in', 0)),
-                                "packets_out": int(child_data.get(b'packets-out', 0)),
-                            })
-                        
-                        return {
-                            "ike_state": state,
-                            "local_host": local_host,
-                            "remote_host": remote_host,
-                            "initiator": initiator,
-                            "established_time": established,
-                            "rekey_time": rekey_time,
-                            "child_sas": child_sas
-                        }
+                    name_str = ike_name.decode('utf-8', errors='ignore') if isinstance(ike_name, bytes) else ike_name
+                    
+                    if name_str == conn_name:
+                        matches.append(ike_data)
+            
+            if not matches:
+                # No SA found
+                return None
+                
+            # Pick the best match (ESTABLISHED preferred, then CONNECTING)
+            # Also prefer the one with children if states are equal
+            best_sa = None
+            
+            # established value is "seconds since established" (duration). We want SMALLEST duration (newest).
+            # To sort Descending, we negate the time.
+            def sa_score(sa_data):
+                state = sa_data.get('state', b'').decode('utf-8', errors='ignore')
+                est_time = int(sa_data.get('established', 0))
+                child_count = len(sa_data.get('child-sas', {}))
+                
+                # Established = 2, Connecting = 1, Other = 0
+                state_score = 2 if state == 'ESTABLISHED' else (1 if state == 'CONNECTING' else 0)
+                
+                # Prioritize: 1. State, 2. Has Children, 3. Newest
+                has_children = 1 if child_count > 0 else 0
+                
+                return (state_score, has_children, -est_time)
+
+            matches.sort(key=sa_score, reverse=True)
+            best_sa = matches[0]
+            ike_data = best_sa
+            
+            # Now parse the best match
+            state = ike_data.get('state', b'').decode('utf-8', errors='ignore')
+            local_host = ike_data.get('local-host', b'').decode('utf-8', errors='ignore')
+            remote_host = ike_data.get('remote-host', b'').decode('utf-8', errors='ignore')
+            initiator = ike_data.get('initiator', b'no') == b'yes'
+            established = int(ike_data.get('established', 0))
+            rekey_time = int(ike_data.get('rekey-time', 0))
+            
+            # Get Child SAs
+            child_sas = []
+            children_sas = ike_data.get('child-sas', {})
+            for sa_key, child_data in children_sas.items():
+                # The key might have a suffix (e.g., -1, -2). The real config name is in 'name'.
+                # If 'name' is missing, fallback to key.
+                c_name_val = child_data.get('name', sa_key)
+                child_name_str = c_name_val.decode('utf-8', errors='ignore') if isinstance(c_name_val, bytes) else c_name_val
+                
+                child_sas.append({
+                    "name": child_name_str,
+                    "state": child_data.get('state', b'').decode('utf-8', errors='ignore'),
+                    "bytes_in": int(child_data.get('bytes-in', 0)),
+                    "bytes_out": int(child_data.get('bytes-out', 0)),
+                    "packets_in": int(child_data.get('packets-in', 0)),
+                    "packets_out": int(child_data.get('packets-out', 0)),
+                })
+            
+            return {
+                "ike_state": state,
+                "local_host": local_host,
+                "remote_host": remote_host,
+                "initiator": initiator,
+                "established_time": established,
+                "rekey_time": rekey_time,
+                "child_sas": child_sas
+            }
             
             # Tunnel not found in active SAs
             return {
@@ -365,7 +425,7 @@ connections {{
             for sa in sas:
                 for ike_name, ike_data in sa.items():
                     name_str = ike_name.decode('utf-8', errors='ignore') if isinstance(ike_name, bytes) else ike_name
-                    state = ike_data.get(b'state', b'').decode('utf-8', errors='ignore')
+                    state = ike_data.get('state', b'').decode('utf-8', errors='ignore')
                     
                     result.append({
                         "name": name_str,
@@ -376,6 +436,85 @@ connections {{
         except Exception as e:
             logger.error(f"Failed to list SAs: {e}")
             return []
+    
+    def get_tunnel_logs(self, name: str, lines: int = 100) -> Dict:
+        """
+        Get StrongSwan logs filtered by tunnel name with error detection.
+        
+        Args:
+            name: Tunnel name (without madmin_ prefix)
+            lines: Number of log lines to fetch
+            
+        Returns:
+            Dict with logs list and detected errors
+        """
+        conn_name = f"madmin_{name}"
+        
+        # Known error patterns and their user-friendly descriptions
+        error_patterns = [
+            ("received AUTH_FAILED", "Autenticazione fallita - PSK errata o mismatch"),
+            ("no matching peer config found", "Configurazione peer non trovata - Controlla ID locale/remoto"),
+            ("received NO_PROPOSAL_CHOSEN", "Nessuna proposal accettata - Algoritmi non compatibili"),
+            ("establishing IKE_SA.*failed", "Connessione IKE fallita - Endpoint non raggiungibile"),
+            ("unable to resolve", "Impossibile risolvere hostname - Problema DNS"),
+            ("peer didn't accept", "Peer ha rifiutato - Verifica configurazione remota"),
+            ("connection timeout", "Timeout connessione - Endpoint non risponde"),
+            ("AUTHENTICATION_FAILED", "Autenticazione rifiutata dal peer"),
+            ("INVALID_KE_PAYLOAD", "Payload DH non valido - Gruppo DH non supportato"),
+            ("INVALID_SYNTAX", "Errore di sintassi nel messaggio IKE"),
+            ("TS_UNACCEPTABLE", "Traffic Selector rifiutato - Subnet non corrispondenti"),
+        ]
+        
+        logs = []
+        errors = []
+        
+        try:
+            # Fetch logs from journalctl for charon/strongswan
+            result = subprocess.run(
+                ['journalctl', '-u', 'strongswan', '-n', str(lines), '--no-pager', '-o', 'short-iso'],
+                capture_output=True,
+                text=True
+            )
+            
+            all_lines = result.stdout.strip().split('\n') if result.stdout else []
+            
+            # Filter lines containing our connection name or general charon messages
+            import re
+            for line in all_lines:
+                # Include lines mentioning our connection or general IKE messages
+                if conn_name in line or name in line:
+                    logs.append(line)
+                    
+                    # Check for error patterns
+                    for pattern, description in error_patterns:
+                        if re.search(pattern, line, re.IGNORECASE):
+                            error_entry = {
+                                "pattern": pattern,
+                                "description": description,
+                                "log_line": line[:200]  # Truncate long lines
+                            }
+                            # Avoid duplicates
+                            if error_entry not in errors:
+                                errors.append(error_entry)
+            
+            # If no filtered logs, include last N general charon lines
+            if not logs and all_lines:
+                for line in all_lines[-20:]:
+                    if 'charon' in line.lower() or 'ike' in line.lower():
+                        logs.append(line)
+            
+            return {
+                "logs": logs[-50:],  # Return last 50 relevant lines
+                "errors": errors,
+                "total_lines": len(logs)
+            }
+            
+        except FileNotFoundError:
+            logger.warning("journalctl not found")
+            return {"logs": [], "errors": [], "total_lines": 0}
+        except Exception as e:
+            logger.error(f"Failed to get tunnel logs: {e}")
+            return {"logs": [], "errors": [{"description": str(e)}], "total_lines": 0}
     
     # --- Firewall Rules ---
     
