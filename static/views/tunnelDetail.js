@@ -612,13 +612,17 @@ async function loadTrafficStats(tunnelId, period = null) {
             response.data.forEach(point => {
                 // Format timestamp based on period
                 const date = new Date(point.timestamp);
+                const hours = date.getHours().toString().padStart(2, '0');
+                const minutes = date.getMinutes().toString().padStart(2, '0');
                 let label;
-                if (selectedPeriod === '1h' || selectedPeriod === '6h') {
-                    label = date.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
-                } else if (selectedPeriod === '24h') {
-                    label = date.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+
+                if (selectedPeriod === '7d' || selectedPeriod === '30d') {
+                    const day = date.getDate().toString().padStart(2, '0');
+                    const month = (date.getMonth() + 1).toString().padStart(2, '0');
+                    label = `${day}/${month} ${hours}:${minutes}`;
                 } else {
-                    label = date.toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit', hour: '2-digit' });
+                    // 1h, 6h, 24h
+                    label = `${hours}:${minutes}`;
                 }
 
                 trafficHistory.labels.push(label);
@@ -636,7 +640,7 @@ async function loadTrafficStats(tunnelId, period = null) {
             `${response.data_points || 0} punti`;
 
         // Render chart
-        renderTrafficChart();
+        renderTrafficChart(selectedPeriod);
 
     } catch (e) {
         console.error('Failed to load traffic stats', e);
@@ -646,7 +650,7 @@ async function loadTrafficStats(tunnelId, period = null) {
     }
 }
 
-function renderTrafficChart() {
+function renderTrafficChart(period = '24h') {
     const chartEl = document.getElementById('traffic-chart');
     if (!chartEl) return;
 
@@ -676,7 +680,42 @@ function renderTrafficChart() {
         },
         xaxis: {
             categories: trafficHistory.labels,
-            labels: { style: { fontSize: '10px' } }
+            labels: {
+                style: { fontSize: '10px' },
+                formatter: function (val) {
+                    if (!val) return '';
+                    // val format: "HH:mm" or "DD/MM HH:mm"
+
+                    if (period === '1h' || period === '6h' || period === '24h') {
+                        // Show full hours and half-hours
+                        if (val.endsWith(':00') || val.endsWith(':30')) return val;
+                        return '';
+                    }
+
+                    const timePart = val.includes(' ') ? val.split(' ')[1] : val;
+                    if (!timePart) return val;
+
+                    if (period === '7d') {
+                        // Every 6 hours (00:00, 06:00, 12:00, 18:00)
+                        if (timePart.endsWith(':00')) {
+                            const hour = parseInt(timePart.split(':')[0]);
+                            if (hour % 6 === 0) return val;
+                        }
+                        return '';
+                    }
+
+                    if (period === '30d') {
+                        // Daily at midnight
+                        if (timePart === '00:00') return val;
+                        return '';
+                    }
+
+                    return val;
+                }
+            },
+            tooltip: {
+                enabled: false
+            }
         },
         yaxis: {
             labels: {
