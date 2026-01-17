@@ -101,9 +101,10 @@ function renderTable() {
                             </td>
                             <td><code>${escapeHtml(t.remote_address)}</code></td>
                             <td><span class="badge bg-azure-lt">v${t.ike_version}</span></td>
+                            <td>
                                 ${t.child_sa_count > 0
             ? (() => {
-                const popoverContent = t.child_sas.map(c =>
+                const popoverContent = (t.child_sas || []).map(c =>
                     `<div class='mb-1'><strong>${escapeHtml(c.name)}</strong><br><small class='text-muted'>${c.local_ts} &leftrightarrow; ${c.remote_ts}</small></div>`
                 ).join('');
                 return `<span class="badge ${t.status === 'established' ? 'bg-success-lt text-success' : 'bg-secondary-lt'} cursor-help" 

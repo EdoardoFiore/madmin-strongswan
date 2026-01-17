@@ -211,6 +211,7 @@ class IpsecTunnelRead(SQLModel):
     created_at: datetime
     updated_at: datetime
     child_sa_count: int = 0
+    child_sas: List["IpsecChildSaRead"] = []
 
 
 class IpsecChildSaCreate(SQLModel):

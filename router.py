@@ -69,6 +69,7 @@ async def list_tunnels(
     return [
         IpsecTunnelRead(
             **tunnel.model_dump(exclude={"child_sas", "psk"}),
+            child_sas=tunnel.child_sas,
             child_sa_count=len(tunnel.child_sas)
         )
         for tunnel in tunnels
