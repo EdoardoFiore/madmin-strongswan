@@ -264,6 +264,7 @@ class IpsecChildSaRead(SQLModel):
     start_action: str
     close_action: str
     enabled: bool
+    is_up: bool = False
 
 
 class IpsecTunnelStatus(SQLModel):

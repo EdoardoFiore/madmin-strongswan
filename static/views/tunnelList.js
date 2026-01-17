@@ -102,21 +102,43 @@ function renderTable() {
                             <td><code>${escapeHtml(t.remote_address)}</code></td>
                             <td><span class="badge bg-azure-lt">v${t.ike_version}</span></td>
                             <td>
-                                ${t.child_sa_count > 0
-            ? (() => {
-                const popoverContent = (t.child_sas || []).map(c =>
+                                <div class="d-flex flex-wrap gap-1">
+                                ${t.child_sa_count > 0 ? (() => {
+            const childSas = t.child_sas || [];
+            const upSas = childSas.filter(c => c.is_up);
+            const downSas = childSas.filter(c => !c.is_up);
+            let content = '';
+
+            if (upSas.length > 0) {
+                const popoverUp = upSas.map(c =>
                     `<div class='mb-1'><strong>${escapeHtml(c.name)}</strong><br><small class='text-muted'>${c.local_ts} &leftrightarrow; ${c.remote_ts}</small></div>`
                 ).join('');
-                return `<span class="badge ${t.status === 'established' ? 'bg-success-lt text-success' : 'bg-secondary-lt'} cursor-help" 
-                              data-bs-toggle="popover" 
-                              data-bs-trigger="hover focus"
-                              data-bs-html="true" 
-                              data-bs-title="Fasi 2 (Child SAs)" 
-                              data-bs-content="${popoverContent.replace(/"/g, '&quot;')}">
-                              ${t.child_sa_count} ${t.status === 'established' ? 'UP' : ''}
-                        </span>`;
-            })()
-            : '<span class="text-muted">0</span>'}
+                content += `<span class="badge bg-success-lt text-success cursor-help" 
+                                                      data-bs-toggle="popover" 
+                                                      data-bs-trigger="hover focus"
+                                                      data-bs-html="true" 
+                                                      data-bs-title="Fasi 2 ATTIVE" 
+                                                      data-bs-content="${popoverUp.replace(/"/g, '&quot;')}">
+                                                      ${upSas.length} UP
+                                                </span>`;
+            }
+
+            if (downSas.length > 0) {
+                const popoverDown = downSas.map(c =>
+                    `<div class='mb-1'><strong>${escapeHtml(c.name)}</strong><br><small class='text-muted'>${c.local_ts} &leftrightarrow; ${c.remote_ts}</small></div>`
+                ).join('');
+                content += `<span class="badge bg-secondary-lt cursor-help" 
+                                                      data-bs-toggle="popover" 
+                                                      data-bs-trigger="hover focus"
+                                                      data-bs-html="true" 
+                                                      data-bs-title="Fasi 2 INATTIVE" 
+                                                      data-bs-content="${popoverDown.replace(/"/g, '&quot;')}">
+                                                      ${downSas.length} DOWN
+                                                </span>`;
+            }
+            return content;
+        })() : '<span class="text-muted">0</span>'}
+                                </div>
                             </td>
                             <td>
                                 <div class="btn-group btn-group-sm" onclick="event.stopPropagation();">

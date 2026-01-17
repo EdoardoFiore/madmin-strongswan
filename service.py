@@ -334,6 +334,28 @@ connections {{
         else:
             logger.info(f"Child SA {child_name} termination result: {result.stderr.strip()}")
             return True
+
+    def get_active_child_sas(self) -> set[str]:
+        """Get names of all active Child SAs from VICI."""
+        active = set()
+        session = self._get_vici_session()
+        if not session:
+            return active
+            
+        try:
+            # List all SAs
+            for sas in session.list_sas():
+                for ike_sa in sas.values():
+                    children = ike_sa.get('child-sas', {})
+                    for child_key, child_data in children.items():
+                        c_name = child_data.get('name', child_key)
+                        if isinstance(c_name, bytes):
+                            c_name = c_name.decode('utf-8', errors='ignore')
+                        active.add(c_name)
+        except Exception as e:
+            logger.error(f"Failed to list active SAs: {e}")
+            
+        return active
     
     def unload_connection(self, name: str) -> bool:
         """Unload connection from StrongSwan runtime."""

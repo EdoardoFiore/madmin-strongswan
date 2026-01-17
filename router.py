@@ -66,14 +66,30 @@ async def list_tunnels(
     )
     tunnels = result.scalars().all()
     
-    return [
-        IpsecTunnelRead(
-            **tunnel.model_dump(exclude={"child_sas", "psk"}),
-            child_sas=tunnel.child_sas,
-            child_sa_count=len(tunnel.child_sas)
+    
+    # Get active Child SA names for status
+    active_child_sas = await run_in_threadpool(strongswan_service.get_active_child_sas)
+    
+    response = []
+    for tunnel in tunnels:
+        # Build child_sas with runtime status
+        child_sas_read = []
+        for child in tunnel.child_sas:
+            child_read = IpsecChildSaRead(
+                **child.model_dump(),
+                is_up=(child.name in active_child_sas)
+            )
+            child_sas_read.append(child_read)
+            
+        response.append(
+            IpsecTunnelRead(
+                **tunnel.model_dump(exclude={"child_sas", "psk"}),
+                child_sas=child_sas_read,
+                child_sa_count=len(tunnel.child_sas)
+            )
         )
-        for tunnel in tunnels
-    ]
+        
+    return response
 
 
 @router.post("/tunnels", response_model=IpsecTunnelRead)
