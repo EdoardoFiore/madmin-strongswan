@@ -101,9 +101,20 @@ function renderTable() {
                             </td>
                             <td><code>${escapeHtml(t.remote_address)}</code></td>
                             <td><span class="badge bg-azure-lt">v${t.ike_version}</span></td>
-                            <td>
                                 ${t.child_sa_count > 0
-            ? `<span class="badge ${t.status === 'established' ? 'bg-success-lt text-success' : 'bg-secondary-lt'}">${t.child_sa_count} ${t.status === 'established' ? 'UP' : ''}</span>`
+            ? (() => {
+                const popoverContent = t.child_sas.map(c =>
+                    `<div class='mb-1'><strong>${escapeHtml(c.name)}</strong><br><small class='text-muted'>${c.local_ts} &leftrightarrow; ${c.remote_ts}</small></div>`
+                ).join('');
+                return `<span class="badge ${t.status === 'established' ? 'bg-success-lt text-success' : 'bg-secondary-lt'} cursor-help" 
+                              data-bs-toggle="popover" 
+                              data-bs-trigger="hover focus"
+                              data-bs-html="true" 
+                              data-bs-title="Fasi 2 (Child SAs)" 
+                              data-bs-content="${popoverContent.replace(/"/g, '&quot;')}">
+                              ${t.child_sa_count} ${t.status === 'established' ? 'UP' : ''}
+                        </span>`;
+            })()
             : '<span class="text-muted">0</span>'}
                             </td>
                             <td>
@@ -137,6 +148,12 @@ function renderTable() {
 }
 
 function setupRowActions() {
+    // Initialize popovers
+    const popoverTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="popover"]'));
+    popoverTriggerList.map(function (popoverTriggerEl) {
+        return new bootstrap.Popover(popoverTriggerEl);
+    });
+
     // Row click navigates to detail
     document.querySelectorAll('.tunnel-row').forEach(row => {
         row.addEventListener('click', (e) => {

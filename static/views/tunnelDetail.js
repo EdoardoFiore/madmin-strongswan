@@ -385,6 +385,14 @@ function renderPhase2Table() {
                             ${canManage ? `
                             <td>
                                 <div class="btn-list flex-nowrap">
+                                    <button class="btn btn-sm btn-ghost-success btn-start-child" 
+                                            data-id="${c.id}" title="Avvia">
+                                        <i class="ti ti-player-play"></i>
+                                    </button>
+                                    <button class="btn btn-sm btn-ghost-warning btn-stop-child" 
+                                            data-id="${c.id}" title="Ferma">
+                                        <i class="ti ti-player-stop"></i>
+                                    </button>
                                     <button class="btn btn-sm btn-ghost-primary btn-edit-child" 
                                             data-id="${c.id}" title="Modifica">
                                         <i class="ti ti-edit"></i>
@@ -405,6 +413,50 @@ function renderPhase2Table() {
 }
 
 function setupDetailEvents(tunnelId) {
+    // Start Child SA
+    document.querySelectorAll('.btn-start-child').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const childId = btn.dataset.id;
+            const icon = btn.querySelector('i');
+            const originalClass = icon.className;
+
+            btn.disabled = true;
+            icon.className = 'spinner-border spinner-border-sm';
+
+            try {
+                await apiPost(`/modules/strongswan/tunnels/${tunnelId}/children/${childId}/start`);
+                showToast('Child SA avviata', 'success');
+            } catch (e) {
+                showToast(e.message, 'error');
+            } finally {
+                btn.disabled = false;
+                icon.className = originalClass;
+            }
+        });
+    });
+
+    // Stop Child SA
+    document.querySelectorAll('.btn-stop-child').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const childId = btn.dataset.id;
+            const icon = btn.querySelector('i');
+            const originalClass = icon.className;
+
+            btn.disabled = true;
+            icon.className = 'spinner-border spinner-border-sm';
+
+            try {
+                await apiPost(`/modules/strongswan/tunnels/${tunnelId}/children/${childId}/stop`);
+                showToast('Child SA fermata', 'success');
+            } catch (e) {
+                showToast(e.message, 'error');
+            } finally {
+                btn.disabled = false;
+                icon.className = originalClass;
+            }
+        });
+    });
+
     // Start tunnel
     document.getElementById('btn-start')?.addEventListener('click', async () => {
         const btn = document.getElementById('btn-start');

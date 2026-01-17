@@ -278,6 +278,35 @@ connections {{
         else:
             logger.error(f"Failed to initiate tunnel {name}: {result.stderr}")
             return False
+            
+    def initiate_child_sa(self, tunnel_name: str, child_name: str) -> bool:
+        """
+        Initiate a specific Child SA (Phase 2).
+        
+        Args:
+            tunnel_name: Parent tunnel name (without madmin_ prefix)
+            child_name: Child SA name
+        """
+        # In swanctl.conf, children are nested. Reference via child name directly usually works 
+        # but to be safe/specific we might depend on how they are named.
+        # StrongSwan swanctl usually targets child by name.
+        # If the child name is unique globally in swanctl, just child_name works.
+        # But we name them just "child1", "child2" etc? No, user gives them names. 
+        # If user gives duplicate names across tunnels, safe reference is needed?
+        # Swanctl documentation says --child <name>. 
+        
+        # Let's try --child <child_name>
+        result = self._run_swanctl(['--initiate', '--child', child_name, '--timeout', '5'])
+        
+        if result.returncode == 0:
+            logger.info(f"Initiated child SA {child_name}")
+            return True
+        elif "timeout" in (result.stderr + result.stdout).lower():
+            logger.info(f"Initiate child {child_name} backgrounded (timeout)")
+            return True
+        else:
+            logger.error(f"Failed to initiate child {child_name}: {result.stderr}")
+            return False
     
     def terminate_tunnel(self, name: str) -> bool:
         """Terminate an IPsec tunnel."""
@@ -289,6 +318,21 @@ connections {{
         else:
             # Tunnel may not be active, which is fine
             logger.info(f"Tunnel {name} termination result: {result.stderr.strip()}")
+            return True
+            
+    def terminate_child_sa(self, tunnel_name: str, child_name: str) -> bool:
+        """
+        Terminate a specific Child SA.
+        """
+        # VICI/One might need IKE ID or Child ID. 
+        # swanctl --terminate --child <name>
+        result = self._run_swanctl(['--terminate', '--child', child_name])
+        
+        if result.returncode == 0:
+            logger.info(f"Terminated child SA {child_name}")
+            return True
+        else:
+            logger.info(f"Child SA {child_name} termination result: {result.stderr.strip()}")
             return True
     
     def unload_connection(self, name: str) -> bool:
@@ -437,18 +481,22 @@ connections {{
             logger.error(f"Failed to list SAs: {e}")
             return []
     
-    def get_tunnel_logs(self, name: str, lines: int = 100) -> Dict:
+    def get_tunnel_logs(self, name: str, lines: int = 100, remote_address: str = None) -> Dict:
         """
         Get StrongSwan logs filtered by tunnel name with error detection.
         
         Args:
             name: Tunnel name (without madmin_ prefix)
             lines: Number of log lines to fetch
+            remote_address: Optional remote peer address to filter by (IP or FQDN)
             
         Returns:
             Dict with logs list and detected errors
         """
         conn_name = f"madmin_{name}"
+        
+        # Valid remote address for filtering (ignore empty or %any)
+        filter_remote = remote_address if remote_address and remote_address not in ['%any', '0.0.0.0/0'] else None
         
         # Known error patterns and their user-friendly descriptions
         error_patterns = [
@@ -482,7 +530,8 @@ connections {{
             import re
             for line in all_lines:
                 # Include lines mentioning our connection or general IKE messages
-                if conn_name in line or name in line:
+                # Also include remote address matches if available (for initial negotiation)
+                if (conn_name in line) or (name in line) or (filter_remote and filter_remote in line):
                     logs.append(line)
                     
                     # Check for error patterns

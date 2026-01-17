@@ -91,7 +91,29 @@ def run():
     except Exception as e:
         errors.append(f"IP forwarding configuration failed: {e}")
     
-    # 4. Configure and start strongswan service
+    # 4. Configure StrongSwan Logging
+    logger.info("Configuring StrongSwan logging...")
+    logging_conf = Path("/etc/strongswan.d/charon-systemd.conf")
+    try:
+        # Enable ike_name to show tunnel name in logs
+        logging_content = """# MADMIN - StrongSwan Logging Configuration
+charon-systemd {
+    journal {
+        # Enable default logging to systemd journal
+        default = 1
+        # Include connection name (IKE_SA name) in logs
+        ike_name = yes
+    }
+}
+"""
+        logging_conf.write_text(logging_content)
+        logger.info(f"Created {logging_conf} with ike_name enabled")
+    except PermissionError:
+        errors.append(f"Permission denied creating {logging_conf}")
+    except Exception as e:
+        errors.append(f"Failed to create {logging_conf}: {e}")
+
+    # 5. Configure and start strongswan service
     # charon-systemd provides 'strongswan' service with VICI support
     # strongswan-starter is legacy and doesn't work well with swanctl
     logger.info("Configuring strongswan service...")

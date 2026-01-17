@@ -98,7 +98,7 @@ class IpsecChildSa(SQLModel, table=True):
     __tablename__ = "ipsec_child_sa"
     
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
-    tunnel_id: uuid.UUID = Field(foreign_key="ipsec_tunnel.id", index=True, sa_column_kwargs={"ondelete": "CASCADE"})
+    tunnel_id: uuid.UUID = Field(foreign_key="ipsec_tunnel.id", index=True)
     name: str = Field(max_length=64)
     
     # Traffic Selectors (CIDR notation)
@@ -132,7 +132,7 @@ class IpsecTrafficStats(SQLModel, table=True):
     __tablename__ = "ipsec_traffic_stats"
     
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
-    tunnel_id: uuid.UUID = Field(foreign_key="ipsec_tunnel.id", index=True, sa_column_kwargs={"ondelete": "CASCADE"})
+    tunnel_id: uuid.UUID = Field(foreign_key="ipsec_tunnel.id", index=True)
     
     # Traffic counters (cumulative values at collection time)
     bytes_in: int = Field(default=0)

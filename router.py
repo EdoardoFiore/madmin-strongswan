@@ -464,7 +464,12 @@ async def get_tunnel_logs(
     if not tunnel:
         raise HTTPException(status_code=404, detail="Tunnel not found")
     
-    logs_data = await run_in_threadpool(strongswan_service.get_tunnel_logs, tunnel.name, lines)
+    logs_data = await run_in_threadpool(
+        strongswan_service.get_tunnel_logs, 
+        tunnel.name, 
+        lines,
+        tunnel.remote_address
+    )
     
     return {
         "tunnel_id": tunnel.id,
@@ -756,6 +761,66 @@ async def delete_child_sa(
     logger.info(f"Deleted Child SA {child.name}")
     
     return {"status": "deleted", "name": child.name}
+
+
+@router.post("/tunnels/{tunnel_id}/children/{child_id}/start")
+async def start_child_sa(
+    tunnel_id: str,
+    child_id: str,
+    db: AsyncSession = Depends(get_session),
+    _user: User = Depends(require_permission("ipsec.manage"))
+):
+    """Start (initiate) a Child SA."""
+    result = await db.execute(
+        select(IpsecChildSa)
+        .where(IpsecChildSa.id == child_id, IpsecChildSa.tunnel_id == tunnel_id)
+        .options(selectinload(IpsecChildSa.tunnel))
+    )
+    child = result.scalar_one_or_none()
+    
+    if not child:
+        raise HTTPException(status_code=404, detail="Child SA not found")
+        
+    success = await run_in_threadpool(
+        strongswan_service.initiate_child_sa, 
+        child.tunnel.name, 
+        child.name
+    )
+    
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to initiate Child SA")
+        
+    return {"status": "started", "name": child.name}
+
+
+@router.post("/tunnels/{tunnel_id}/children/{child_id}/stop")
+async def stop_child_sa(
+    tunnel_id: str,
+    child_id: str,
+    db: AsyncSession = Depends(get_session),
+    _user: User = Depends(require_permission("ipsec.manage"))
+):
+    """Stop (terminate) a Child SA."""
+    result = await db.execute(
+        select(IpsecChildSa)
+        .where(IpsecChildSa.id == child_id, IpsecChildSa.tunnel_id == tunnel_id)
+        .options(selectinload(IpsecChildSa.tunnel))
+    )
+    child = result.scalar_one_or_none()
+    
+    if not child:
+        raise HTTPException(status_code=404, detail="Child SA not found")
+        
+    success = await run_in_threadpool(
+        strongswan_service.terminate_child_sa, 
+        child.tunnel.name, 
+        child.name
+    )
+    
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to terminate Child SA")
+        
+    return {"status": "stopped", "name": child.name}
 
 
 # --- HELPER FUNCTIONS ---
