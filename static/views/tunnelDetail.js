@@ -483,7 +483,8 @@ function setupDetailEvents(tunnelId) {
                 'Elimina Phase 2',
                 `Eliminare <strong>${escapeHtml(childName)}</strong>?`,
                 'Elimina',
-                'btn-danger'
+                'btn-danger',
+                true  // Enable HTML content
             );
 
             if (confirmed) {

@@ -125,17 +125,16 @@ export function buildProposal(enc, integ, dhGroup) {
     return isAead ? `${enc}-${dhGroup}` : `${enc}-${integ}-${dhGroup}`;
 }
 
-// Parse proposal string to components (handling multiple algorithms)
+// Parse proposal string to components (handling multiple proposals separated by comma)
 export function parseProposal(proposal) {
-    if (!proposal) return { enc: ['aes256'], integ: ['sha256'], dh: ['modp2048'] };
+    const result = {
+        enc: ['aes256'],
+        integ: ['sha256'],
+        dh: ['modp2048'],
+        pairs: [{ enc: 'aes256', integ: 'sha256' }]  // Array of enc+integ pairs
+    };
 
-    // Split by - and filter empty
-    const parts = proposal.split('-').filter(p => p);
-
-    // Categorize
-    const enc = [];
-    const integ = [];
-    const dh = [];
+    if (!proposal) return result;
 
     const allEnc = [
         ...CRYPTO_OPTIONS.encryption.common,
@@ -149,20 +148,54 @@ export function parseProposal(proposal) {
         ...CRYPTO_OPTIONS.dhGroups.ikev2
     ].map(o => o.value);
 
-    parts.forEach(p => {
-        if (allEnc.includes(p)) enc.push(p);
-        else if (allInteg.includes(p)) integ.push(p);
-        else if (allDh.includes(p)) dh.push(p);
-        else if (p === 'aes256') enc.push(p); // Fallback for common things
-        else if (p === 'sha256') integ.push(p);
+    const encSet = new Set();
+    const integSet = new Set();
+    const dhSet = new Set();
+    const pairs = [];
+
+    // Split by comma for multiple proposals
+    const proposals = proposal.split(',').map(p => p.trim()).filter(p => p);
+
+    proposals.forEach(singleProposal => {
+        const parts = singleProposal.split('-').filter(p => p);
+
+        let pairEnc = null;
+        let pairInteg = null;
+
+        parts.forEach(p => {
+            if (allEnc.includes(p)) {
+                encSet.add(p);
+                if (!pairEnc) pairEnc = p;
+            } else if (allInteg.includes(p)) {
+                integSet.add(p);
+                if (!pairInteg) pairInteg = p;
+            } else if (allDh.includes(p)) {
+                dhSet.add(p);
+            } else if (p === 'aes256' || p === 'aes128' || p === '3des') {
+                encSet.add(p);
+                if (!pairEnc) pairEnc = p;
+            } else if (p === 'sha256' || p === 'sha1' || p === 'md5') {
+                integSet.add(p);
+                if (!pairInteg) pairInteg = p;
+            }
+        });
+
+        // Add pair if we found enc/integ
+        if (pairEnc || pairInteg) {
+            pairs.push({
+                enc: pairEnc || 'aes256',
+                integ: pairInteg || 'sha256'
+            });
+        }
     });
 
-    // Defaults if empty
-    if (enc.length === 0) enc.push('aes256');
-    // Integ optional for AEAD, but usually check AEAD first
-    // DH optional? No, usually required for PFS.
+    // Convert sets to arrays
+    result.enc = encSet.size > 0 ? Array.from(encSet) : ['aes256'];
+    result.integ = integSet.size > 0 ? Array.from(integSet) : ['sha256'];
+    result.dh = dhSet.size > 0 ? Array.from(dhSet) : ['modp2048'];
+    result.pairs = pairs.length > 0 ? pairs : [{ enc: 'aes256', integ: 'sha256' }];
 
-    return { enc, integ, dh };
+    return result;
 }
 
 // Create select options HTML

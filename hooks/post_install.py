@@ -128,6 +128,19 @@ def run():
             logger.info("strongswan service started")
         else:
             logger.warning(f"Failed to start strongswan: {result.stderr.strip()}")
+        
+        # Restart to ensure all plugins are loaded correctly
+        import time
+        time.sleep(2)  # Wait for service to stabilize
+        result = subprocess.run(
+            ['systemctl', 'restart', 'strongswan'],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0:
+            logger.info("strongswan service restarted successfully")
+        else:
+            logger.warning(f"Failed to restart strongswan: {result.stderr.strip()}")
             
     except FileNotFoundError:
         errors.append("systemctl not found")

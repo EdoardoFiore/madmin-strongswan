@@ -14,6 +14,64 @@ import {
 let currentTunnel = null;
 let onSaveCallback = null;
 let modal = null;
+let p1ProposalCounter = 0;
+
+// Render DH group checkboxes
+function renderDhCheckboxes(version, selectedGroups = []) {
+    const groups = getDhGroups(version);
+    return groups.map(g => `
+        <div class="form-check form-check-inline">
+            <input class="form-check-input dh-checkbox" type="checkbox" 
+                   value="${g.value}" id="dh-${g.value}" 
+                   ${selectedGroups.includes(g.value) ? 'checked' : ''}>
+            <label class="form-check-label small" for="dh-${g.value}">${g.label}</label>
+        </div>
+    `).join('');
+}
+
+// Render a Phase 1 proposal pair row
+function renderP1ProposalPair(idx, version, enc = 'aes256', integ = 'sha256') {
+    const id = p1ProposalCounter++;
+    return `
+        <div class="row g-2 mb-2 p1-proposal-pair" data-pair-id="${id}">
+            <div class="col-5">
+                ${idx === 0 ? '<label class="form-label small">Encryption</label>' : ''}
+                <select class="form-select form-select-sm p1-enc">
+                    ${selectOptions(getEncryptionOptions(version), enc)}
+                </select>
+            </div>
+            <div class="col-5">
+                ${idx === 0 ? '<label class="form-label small">Authentication</label>' : ''}
+                <select class="form-select form-select-sm p1-integ">
+                    ${selectOptions(CRYPTO_OPTIONS.integrity.common, integ)}
+                </select>
+            </div>
+            <div class="col-2 d-flex align-items-${idx === 0 ? 'end' : 'center'}">
+                ${idx > 0 ? `
+                    <button type="button" class="btn btn-sm btn-outline-danger btn-remove-p1-proposal" data-pair-id="${id}">
+                        <i class="ti ti-trash"></i>
+                    </button>
+                ` : '<span class="text-muted small mb-2">Primario</span>'}
+            </div>
+        </div>
+    `;
+}
+
+// Render all proposal pairs (for edit mode)
+function renderAllP1Proposals(version, pairs) {
+    if (!pairs || pairs.length === 0) {
+        return renderP1ProposalPair(0, version, 'aes256', 'sha256');
+    }
+    return pairs.map((pair, idx) =>
+        renderP1ProposalPair(idx, version, pair.enc || 'aes256', pair.integ || 'sha256')
+    ).join('');
+}
+
+// Get selected DH groups from checkboxes
+function getSelectedDhGroups() {
+    const checkboxes = document.querySelectorAll('.dh-checkbox:checked');
+    return Array.from(checkboxes).map(cb => cb.value);
+}
 
 export function showTunnelForm(tunnel, onSave) {
     currentTunnel = tunnel;
@@ -187,31 +245,27 @@ export function showTunnelForm(tunnel, onSave) {
                         
                         <!-- Phase 1 Proposal Section -->
                         <div class="card mb-3">
-                            <div class="card-header py-2">
+                            <div class="card-header py-2 d-flex justify-content-between align-items-center">
                                 <h6 class="card-title mb-0">Phase 1 Proposal</h6>
+                                <button type="button" class="btn btn-sm btn-outline-primary" id="btn-add-p1-proposal">
+                                    <i class="ti ti-plus"></i> Add
+                                </button>
                             </div>
                             <div class="card-body">
-                                <div class="row">
-                                    <div class="col-md-6 mb-3">
-                                        <label class="form-label">Encryption</label>
-                                        <select class="form-select" id="tunnel-encryption">
-                                            ${selectOptions(getEncryptionOptions(ikeVersion), proposal.enc)}
-                                        </select>
-                                    </div>
-                                    <div class="col-md-6 mb-3" id="integrity-container">
-                                        <label class="form-label">Authentication/Integrity</label>
-                                        <select class="form-select" id="tunnel-integrity">
-                                            ${selectOptions(CRYPTO_OPTIONS.integrity.common, proposal.integ || 'sha256')}
-                                        </select>
+                                <!-- Dynamic Proposal Pairs Container -->
+                                <div id="p1-proposals-container">
+                                    ${renderAllP1Proposals(ikeVersion, proposal.pairs)}
+                                </div>
+                                
+                                <!-- Diffie-Hellman Groups (Checkboxes) -->
+                                <div class="mb-3 mt-3">
+                                    <label class="form-label">Diffie-Hellman Group</label>
+                                    <div id="dh-groups-container" class="d-flex flex-wrap gap-2">
+                                        ${renderDhCheckboxes(ikeVersion, proposal.dh || ['modp2048'])}
                                     </div>
                                 </div>
+                                
                                 <div class="row">
-                                    <div class="col-md-6 mb-3">
-                                        <label class="form-label">Diffie-Hellman Group</label>
-                                        <select class="form-select" id="tunnel-dh">
-                                            ${selectOptions(getDhGroups(ikeVersion), proposal.dh || 'modp2048')}
-                                        </select>
-                                    </div>
                                     <div class="col-md-6 mb-3">
                                         <label class="form-label">Key Lifetime (secondi)</label>
                                         <input type="number" class="form-control" id="tunnel-lifetime" 
@@ -259,7 +313,7 @@ function setupFormEvents() {
         if (e.target.checked) input.value = '';
     });
 
-    // IKE version change - update options
+    // IKE version change - update all proposal options
     document.querySelectorAll('input[name="tunnel-ike"]').forEach(radio => {
         radio.addEventListener('change', (e) => {
             const version = e.target.value;
@@ -267,13 +321,23 @@ function setupFormEvents() {
         });
     });
 
-    // Encryption change - hide integrity for AEAD
-    document.getElementById('tunnel-encryption')?.addEventListener('change', (e) => {
-        updateIntegrityVisibility(e.target.value);
+    // Add Phase 1 proposal pair
+    document.getElementById('btn-add-p1-proposal')?.addEventListener('click', () => {
+        const container = document.getElementById('p1-proposals-container');
+        const version = document.querySelector('input[name="tunnel-ike"]:checked')?.value || '2';
+        const pairCount = container.querySelectorAll('.p1-proposal-pair').length;
+        container.insertAdjacentHTML('beforeend', renderP1ProposalPair(pairCount, version, 'aes128', 'sha256'));
     });
 
-    // Initial integrity visibility check
-    updateIntegrityVisibility(document.getElementById('tunnel-encryption')?.value);
+    // Remove Phase 1 proposal pair (event delegation)
+    document.getElementById('p1-proposals-container')?.addEventListener('click', (e) => {
+        const removeBtn = e.target.closest('.btn-remove-p1-proposal');
+        if (removeBtn) {
+            const pairId = removeBtn.dataset.pairId;
+            const pair = document.querySelector(`.p1-proposal-pair[data-pair-id="${pairId}"]`);
+            pair?.remove();
+        }
+    });
 
     // Save button
     document.getElementById('btn-save-tunnel')?.addEventListener('click', saveTunnel);
@@ -286,25 +350,23 @@ function updateIkeVersionOptions(version) {
         modeContainer.style.display = version === '1' ? '' : 'none';
     }
 
-    // Update encryption options (default: aes256)
-    const encSelect = document.getElementById('tunnel-encryption');
-    if (encSelect) {
-        const currentEnc = encSelect.value;
-        encSelect.innerHTML = selectOptions(getEncryptionOptions(version), currentEnc || 'aes256');
-    }
+    // Update all encryption dropdowns in proposal pairs
+    document.querySelectorAll('.p1-enc').forEach(select => {
+        const currentVal = select.value;
+        select.innerHTML = selectOptions(getEncryptionOptions(version), currentVal || 'aes256');
+    });
 
-    // Update integrity/authentication options (default: sha256)
-    const integSelect = document.getElementById('tunnel-integrity');
-    if (integSelect) {
-        const currentInteg = integSelect.value;
-        integSelect.innerHTML = selectOptions(CRYPTO_OPTIONS.integrity.common, currentInteg || 'sha256');
-    }
+    // Update all integrity dropdowns in proposal pairs
+    document.querySelectorAll('.p1-integ').forEach(select => {
+        const currentVal = select.value;
+        select.innerHTML = selectOptions(CRYPTO_OPTIONS.integrity.common, currentVal || 'sha256');
+    });
 
-    // Update DH dropdown options (default: modp2048)
-    const dhSelect = document.getElementById('tunnel-dh');
-    if (dhSelect) {
-        const currentDh = dhSelect.value;
-        dhSelect.innerHTML = selectOptions(getDhGroups(version), currentDh || 'modp2048');
+    // Update DH checkboxes
+    const dhContainer = document.getElementById('dh-groups-container');
+    if (dhContainer) {
+        const selectedDh = getSelectedDhGroups();
+        dhContainer.innerHTML = renderDhCheckboxes(version, selectedDh.length > 0 ? selectedDh : ['modp2048']);
     }
 }
 
@@ -333,10 +395,21 @@ async function saveTunnel() {
     const dpdDelay = parseInt(document.getElementById('tunnel-dpd-delay').value) || 30;
     const localId = document.getElementById('tunnel-local-id').value.trim() || null;
     const remoteId = document.getElementById('tunnel-remote-id').value.trim() || null;
-    const encryption = document.getElementById('tunnel-encryption').value;
-    const integrity = document.getElementById('tunnel-integrity').value;
-    const dhGroup = document.getElementById('tunnel-dh').value;
     const lifetime = parseInt(document.getElementById('tunnel-lifetime').value) || 86400;
+
+    // Collect proposal pairs (encryption + integrity)
+    const proposalPairs = [];
+    document.querySelectorAll('.p1-proposal-pair').forEach(pair => {
+        const enc = pair.querySelector('.p1-enc')?.value || 'aes256';
+        const integ = pair.querySelector('.p1-integ')?.value || 'sha256';
+        proposalPairs.push({ enc, integ });
+    });
+
+    // Collect DH groups from checkboxes
+    const dhGroups = getSelectedDhGroups();
+    if (dhGroups.length === 0) {
+        dhGroups.push('modp2048'); // Default if none selected
+    }
 
     // Validation
     if (!name) {
@@ -352,8 +425,21 @@ async function saveTunnel() {
         return;
     }
 
-    // Build proposal string
-    const proposal = buildProposal(encryption, integrity, dhGroup);
+    // Build proposal string: enc-integ-dh,enc-integ-dh,...
+    // For multiple DH, append each DH to first proposal pair
+    const proposals = [];
+    proposalPairs.forEach((pair, idx) => {
+        if (idx === 0) {
+            // First pair gets all DH groups
+            dhGroups.forEach(dh => {
+                proposals.push(buildProposal(pair.enc, pair.integ, dh));
+            });
+        } else {
+            // Other pairs use first DH group
+            proposals.push(buildProposal(pair.enc, pair.integ, dhGroups[0]));
+        }
+    });
+    const proposal = proposals.join(',');
 
     const data = {
         name,

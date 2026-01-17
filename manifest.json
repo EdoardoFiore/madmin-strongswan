@@ -1,7 +1,7 @@
 {
     "id": "strongswan",
     "name": "IPsec VPN Manager",
-    "version": "0.3.0",
+    "version": "0.4.0",
     "description": "Site-to-Site IPsec VPN management with strongSwan, IKEv1/IKEv2 support, and FortiGate-style configuration",
     "author": "MADMIN Team",
     "system_dependencies": {

@@ -96,6 +96,44 @@ function renderProposalPair(index, enc = 'aes256', integ = 'sha256') {
     `;
 }
 
+// Render all ESP proposal pairs (for edit mode)
+function renderAllEspProposals(pairs) {
+    if (!pairs || pairs.length === 0) {
+        return renderProposalPair(0, 'aes256', 'sha256');
+    }
+    return pairs.map((pair, idx) =>
+        renderProposalPair(idx, pair.enc || 'aes256', pair.integ || 'sha256')
+    ).join('');
+}
+
+// Render PFS group checkboxes
+function renderPfsCheckboxes(selectedGroups = []) {
+    const groups = CRYPTO_OPTIONS.pfsGroups;
+    // Add "No PFS" option
+    let html = `
+        <div class="form-check form-check-inline">
+            <input class="form-check-input pfs-checkbox" type="checkbox" 
+                   value="" id="pfs-none" ${selectedGroups.length === 0 || selectedGroups.includes('') ? 'checked' : ''}>
+            <label class="form-check-label small" for="pfs-none">Nessuno</label>
+        </div>
+    `;
+    html += groups.map(g => `
+        <div class="form-check form-check-inline">
+            <input class="form-check-input pfs-checkbox" type="checkbox" 
+                   value="${g.value}" id="pfs-${g.value}" 
+                   ${selectedGroups.includes(g.value) ? 'checked' : ''}>
+            <label class="form-check-label small" for="pfs-${g.value}">${g.label}</label>
+        </div>
+    `).join('');
+    return html;
+}
+
+// Get selected PFS groups from checkboxes
+function getSelectedPfsGroups() {
+    const checkboxes = document.querySelectorAll('.pfs-checkbox:checked');
+    return Array.from(checkboxes).map(cb => cb.value);
+}
+
 export function renderChildSaForm(tunnelId, onSave, initialData = null) {
     const isEdit = !!initialData;
     const data = initialData || {};
@@ -165,17 +203,18 @@ export function renderChildSaForm(tunnelId, onSave, initialData = null) {
                         </div>
                         
                         <div id="proposal-pairs-container">
-                            ${renderProposalPair(0, selEnc[0] || 'aes256', selInteg[0] || 'sha256')}
+                            ${renderAllEspProposals(proposal.pairs)}
                         </div>
                         
-                        <div class="row g-2 mb-3 mt-2">
-                            <div class="col-md-6">
-                                <label class="form-label small mb-1">PFS Group</label>
-                                <select class="form-select form-select-sm" id="phase2-pfs">
-                                    <option value="">Nessuno (No PFS)</option>
-                                    ${selectOptions(CRYPTO_OPTIONS.pfsGroups, selDh[0] || 'modp2048')}
-                                </select>
+                        <!-- PFS Groups (Checkboxes) -->
+                        <div class="mb-3 mt-3">
+                            <label class="form-label small mb-1">PFS Group (Perfect Forward Secrecy)</label>
+                            <div id="pfs-groups-container" class="d-flex flex-wrap gap-2">
+                                ${renderPfsCheckboxes(proposal.dh || [])}
                             </div>
+                        </div>
+                        
+                        <div class="row g-2 mb-3">
                             <div class="col-md-6">
                                 <label class="form-label small mb-1">Key Lifetime (sec)</label>
                                 <input type="number" class="form-control form-control-sm" id="phase2-lifetime" 
@@ -240,21 +279,32 @@ export function setupChildSaFormEvents(tunnelId, onSave) {
 
         // Build ESP proposal from all pairs
         const pairs = document.querySelectorAll('.proposal-pair');
-        const pfsGroup = document.getElementById('phase2-pfs').value;
+        const pfsGroups = getSelectedPfsGroups().filter(g => g !== ''); // Exclude empty (No PFS)
         const proposals = [];
 
-        pairs.forEach(pair => {
+        pairs.forEach((pair, pairIdx) => {
             const enc = pair.querySelector('.proposal-enc').value;
             const integ = pair.querySelector('.proposal-integ').value;
-            let proposal = `${enc}-${integ}`;
-            if (pfsGroup) {
-                proposal += `-${pfsGroup}`;
+
+            if (pfsGroups.length === 0) {
+                // No PFS selected
+                proposals.push(`${enc}-${integ}`);
+            } else if (pairIdx === 0) {
+                // First pair gets all PFS groups
+                pfsGroups.forEach(pfs => {
+                    proposals.push(`${enc}-${integ}-${pfs}`);
+                });
+            } else {
+                // Other pairs use first PFS group
+                proposals.push(`${enc}-${integ}-${pfsGroups[0]}`);
             }
-            proposals.push(proposal);
         });
 
         // Join proposals with comma for strongswan format
         const espProposal = proposals.join(',');
+
+        // Get first PFS group for pfs_group field (or null)
+        const pfsGroup = pfsGroups.length > 0 ? pfsGroups[0] : null;
 
         btn.disabled = true;
         btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
@@ -265,7 +315,7 @@ export function setupChildSaFormEvents(tunnelId, onSave) {
             remote_ts: remoteTs,
             esp_proposal: espProposal,
             esp_lifetime: parseInt(document.getElementById('phase2-lifetime')?.value) || 43200,
-            pfs_group: pfsGroup || null,
+            pfs_group: pfsGroup,
             start_action: document.getElementById('phase2-start')?.value || 'trap',
             close_action: document.getElementById('phase2-close')?.value || 'restart'
         };

@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.concurrency import run_in_threadpool
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.orm import selectinload
 
 from core.database import get_session
@@ -276,6 +276,12 @@ async def delete_tunnel(
     
     # Remove firewall rules
     await run_in_threadpool(strongswan_service.flush_tunnel_forward_rules, tunnel.name)
+    
+    # Delete traffic stats first (to avoid FK constraint violation)
+    from modules.strongswan.models import IpsecTrafficStats
+    await db.execute(
+        delete(IpsecTrafficStats).where(IpsecTrafficStats.tunnel_id == tunnel.id)
+    )
     
     # Delete from DB (cascades to child_sas)
     await db.delete(tunnel)

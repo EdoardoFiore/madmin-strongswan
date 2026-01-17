@@ -562,44 +562,90 @@ connections {{
         Setup FORWARD rules for a Child SA traffic selector.
         
         Allows traffic between local and remote subnets.
+        Uses comments to track rules and prevent duplicates.
         """
         comment = f"IPSEC_{tunnel_name}"
         success = True
         
+        # Check if rules already exist by looking at current rules
+        existing_rules = self._get_chain_rules(self.IPSEC_FORWARD_CHAIN)
+        
         # Forward: local -> remote
-        if not self._run_iptables('filter', [
-            '-C', self.IPSEC_FORWARD_CHAIN, '-s', local_ts, '-d', remote_ts, '-j', 'ACCEPT'
-        ], suppress_errors=True):
+        rule_signature_1 = f"-s {local_ts} -d {remote_ts}"
+        if rule_signature_1 not in existing_rules:
             success &= self._run_iptables('filter', [
                 '-A', self.IPSEC_FORWARD_CHAIN, '-s', local_ts, '-d', remote_ts,
                 '-m', 'comment', '--comment', comment, '-j', 'ACCEPT'
             ])
+        else:
+            logger.debug(f"Rule {rule_signature_1} already exists, skipping")
         
         # Forward: remote -> local
-        if not self._run_iptables('filter', [
-            '-C', self.IPSEC_FORWARD_CHAIN, '-s', remote_ts, '-d', local_ts, '-j', 'ACCEPT'
-        ], suppress_errors=True):
+        rule_signature_2 = f"-s {remote_ts} -d {local_ts}"
+        if rule_signature_2 not in existing_rules:
             success &= self._run_iptables('filter', [
                 '-A', self.IPSEC_FORWARD_CHAIN, '-s', remote_ts, '-d', local_ts,
                 '-m', 'comment', '--comment', comment, '-j', 'ACCEPT'
             ])
+        else:
+            logger.debug(f"Rule {rule_signature_2} already exists, skipping")
         
         if success:
             logger.info(f"FORWARD rules for {local_ts} <-> {remote_ts} configured")
         return success
     
+    def _get_chain_rules(self, chain: str) -> str:
+        """Get all rules in a chain as a string for searching."""
+        try:
+            result = subprocess.run(
+                ['iptables', '-t', 'filter', '-S', chain],
+                capture_output=True,
+                text=True
+            )
+            return result.stdout if result.returncode == 0 else ""
+        except Exception:
+            return ""
+    
     def remove_forward_rules(self, local_ts: str, remote_ts: str) -> bool:
-        """Remove FORWARD rules for a traffic selector pair."""
+        """
+        Remove FORWARD rules for a traffic selector pair.
+        Finds and removes rules matching the source/dest combination.
+        """
         success = True
         
-        # Try to delete both directions (ignore errors if rules don't exist)
-        self._run_iptables('filter', [
-            '-D', self.IPSEC_FORWARD_CHAIN, '-s', local_ts, '-d', remote_ts, '-j', 'ACCEPT'
-        ], suppress_errors=True)
-        
-        self._run_iptables('filter', [
-            '-D', self.IPSEC_FORWARD_CHAIN, '-s', remote_ts, '-d', local_ts, '-j', 'ACCEPT'
-        ], suppress_errors=True)
+        # Get current rules with line numbers
+        try:
+            result = subprocess.run(
+                ['iptables', '-t', 'filter', '-S', self.IPSEC_FORWARD_CHAIN],
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode != 0:
+                return False
+            
+            rules = result.stdout.strip().split('\n')
+            
+            # Find rules matching our traffic selectors
+            for rule in rules:
+                if f'-s {local_ts}' in rule and f'-d {remote_ts}' in rule:
+                    # Convert -A to -D for deletion
+                    delete_cmd = rule.replace('-A ', '-D ', 1).split()
+                    if delete_cmd:
+                        self._run_iptables('filter', delete_cmd, suppress_errors=True)
+                        logger.debug(f"Deleted rule: {rule}")
+                
+                if f'-s {remote_ts}' in rule and f'-d {local_ts}' in rule:
+                    delete_cmd = rule.replace('-A ', '-D ', 1).split()
+                    if delete_cmd:
+                        self._run_iptables('filter', delete_cmd, suppress_errors=True)
+                        logger.debug(f"Deleted rule: {rule}")
+            
+            logger.info(f"Removed FORWARD rules for {local_ts} <-> {remote_ts}")
+            
+        except Exception as e:
+            logger.error(f"Failed to remove FORWARD rules: {e}")
+            success = False
         
         return success
     
@@ -675,11 +721,22 @@ connections {{
                 total_packets_in = 0
                 total_packets_out = 0
                 
-                for child_name, child_data in status.get("child_sas", {}).items():
-                    total_bytes_in += child_data.get("bytes_in", 0)
-                    total_bytes_out += child_data.get("bytes_out", 0)
-                    total_packets_in += child_data.get("packets_in", 0)
-                    total_packets_out += child_data.get("packets_out", 0)
+                # child_sas can be either a list or dict depending on context
+                child_sas = status.get("child_sas", [])
+                if isinstance(child_sas, dict):
+                    # Dict format: {child_name: child_data}
+                    for child_name, child_data in child_sas.items():
+                        total_bytes_in += child_data.get("bytes_in", 0)
+                        total_bytes_out += child_data.get("bytes_out", 0)
+                        total_packets_in += child_data.get("packets_in", 0)
+                        total_packets_out += child_data.get("packets_out", 0)
+                elif isinstance(child_sas, list):
+                    # List format: [{name, bytes_in, ...}, ...]
+                    for child_data in child_sas:
+                        total_bytes_in += child_data.get("bytes_in", 0)
+                        total_bytes_out += child_data.get("bytes_out", 0)
+                        total_packets_in += child_data.get("packets_in", 0)
+                        total_packets_out += child_data.get("packets_out", 0)
                 
                 # Get previous stats for delta calculation
                 prev_result = await db.execute(
