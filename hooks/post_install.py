@@ -91,30 +91,43 @@ def run():
     except Exception as e:
         errors.append(f"IP forwarding configuration failed: {e}")
     
-    # 4. Enable and start strongswan-swanctl service
-    logger.info("Enabling strongswan-swanctl service...")
+    # 4. Configure and start strongswan service
+    # charon-systemd provides 'strongswan' service with VICI support
+    # strongswan-starter is legacy and doesn't work well with swanctl
+    logger.info("Configuring strongswan service...")
     try:
-        # Enable service
+        # First, stop and disable the legacy starter if running
+        subprocess.run(
+            ['systemctl', 'stop', 'strongswan-starter'],
+            capture_output=True
+        )
+        subprocess.run(
+            ['systemctl', 'disable', 'strongswan-starter'],
+            capture_output=True
+        )
+        logger.info("Disabled legacy strongswan-starter")
+        
+        # Enable and start the charon-systemd based service
         result = subprocess.run(
-            ['systemctl', 'enable', 'strongswan-swanctl'],
+            ['systemctl', 'enable', 'strongswan'],
             capture_output=True,
             text=True
         )
         if result.returncode == 0:
-            logger.info("strongswan-swanctl service enabled")
+            logger.info("strongswan service enabled")
         else:
-            logger.warning(f"Failed to enable service: {result.stderr.strip()}")
+            logger.warning(f"Failed to enable strongswan: {result.stderr.strip()}")
         
         # Start service
         result = subprocess.run(
-            ['systemctl', 'start', 'strongswan-swanctl'],
+            ['systemctl', 'start', 'strongswan'],
             capture_output=True,
             text=True
         )
         if result.returncode == 0:
-            logger.info("strongswan-swanctl service started")
+            logger.info("strongswan service started")
         else:
-            logger.warning(f"Failed to start service: {result.stderr.strip()}")
+            logger.warning(f"Failed to start strongswan: {result.stderr.strip()}")
             
     except FileNotFoundError:
         errors.append("systemctl not found")

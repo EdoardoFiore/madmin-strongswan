@@ -151,7 +151,7 @@ class StrongSwanService:
 connections {{
     {conn_name} {{
         version = {ike_version}
-        local_addrs = {local_address}
+        local_addrs = {local_address if local_address else '%any'}
         remote_addrs = {remote_address}
         proposals = {ike_proposal}
         rekey_time = {ike_lifetime}s
@@ -640,6 +640,177 @@ connections {{
         except Exception as e:
             logger.error(f"Failed to flush tunnel forward rules: {e}")
             return False
+    
+    # --- Traffic Statistics Collection ---
+    
+    async def collect_traffic_stats(self, db) -> int:
+        """
+        Collect current traffic stats from all active tunnels.
+        Called periodically by background task.
+        
+        Returns:
+            Number of stats records collected
+        """
+        from sqlalchemy import select
+        from modules.strongswan.models import IpsecTunnel, IpsecTrafficStats
+        
+        collected = 0
+        
+        try:
+            # Get all enabled tunnels
+            result = await db.execute(
+                select(IpsecTunnel).where(IpsecTunnel.enabled == True)
+            )
+            tunnels = result.scalars().all()
+            
+            for tunnel in tunnels:
+                # Get current traffic from VICI
+                status = self.get_tunnel_status(tunnel.name)
+                if not status:
+                    continue
+                
+                # Aggregate traffic from all child SAs
+                total_bytes_in = 0
+                total_bytes_out = 0
+                total_packets_in = 0
+                total_packets_out = 0
+                
+                for child_name, child_data in status.get("child_sas", {}).items():
+                    total_bytes_in += child_data.get("bytes_in", 0)
+                    total_bytes_out += child_data.get("bytes_out", 0)
+                    total_packets_in += child_data.get("packets_in", 0)
+                    total_packets_out += child_data.get("packets_out", 0)
+                
+                # Get previous stats for delta calculation
+                prev_result = await db.execute(
+                    select(IpsecTrafficStats)
+                    .where(IpsecTrafficStats.tunnel_id == tunnel.id)
+                    .order_by(IpsecTrafficStats.timestamp.desc())
+                    .limit(1)
+                )
+                prev_stats = prev_result.scalar_one_or_none()
+                
+                # Calculate deltas (handle counter resets)
+                if prev_stats:
+                    bytes_in_delta = max(0, total_bytes_in - prev_stats.bytes_in)
+                    bytes_out_delta = max(0, total_bytes_out - prev_stats.bytes_out)
+                    # If tunnel reconnected, counters reset - use current value
+                    if bytes_in_delta > total_bytes_in:
+                        bytes_in_delta = total_bytes_in
+                    if bytes_out_delta > total_bytes_out:
+                        bytes_out_delta = total_bytes_out
+                else:
+                    bytes_in_delta = 0
+                    bytes_out_delta = 0
+                
+                # Create new stats record
+                stats = IpsecTrafficStats(
+                    tunnel_id=tunnel.id,
+                    bytes_in=total_bytes_in,
+                    bytes_out=total_bytes_out,
+                    packets_in=total_packets_in,
+                    packets_out=total_packets_out,
+                    bytes_in_delta=bytes_in_delta,
+                    bytes_out_delta=bytes_out_delta,
+                    timestamp=datetime.utcnow()
+                )
+                db.add(stats)
+                collected += 1
+            
+            if collected > 0:
+                await db.commit()
+                logger.debug(f"Collected traffic stats for {collected} tunnels")
+                
+        except Exception as e:
+            logger.error(f"Traffic stats collection failed: {e}")
+            await db.rollback()
+        
+        return collected
+    
+    async def get_traffic_history(
+        self, 
+        tunnel_id: uuid.UUID, 
+        period: str,
+        db
+    ) -> List[Dict]:
+        """
+        Get historical traffic data for charting.
+        
+        Args:
+            tunnel_id: UUID of the tunnel
+            period: Time period - "1h", "6h", "24h", "7d"
+            db: Database session
+            
+        Returns:
+            List of {timestamp, bytes_in_delta, bytes_out_delta} points
+        """
+        from sqlalchemy import select
+        from modules.strongswan.models import IpsecTrafficStats
+        from datetime import timedelta
+        
+        # Calculate time range
+        period_map = {
+            "1h": timedelta(hours=1),
+            "6h": timedelta(hours=6),
+            "24h": timedelta(hours=24),
+            "7d": timedelta(days=7)
+        }
+        
+        delta = period_map.get(period, timedelta(hours=24))
+        since = datetime.utcnow() - delta
+        
+        try:
+            result = await db.execute(
+                select(IpsecTrafficStats)
+                .where(IpsecTrafficStats.tunnel_id == tunnel_id)
+                .where(IpsecTrafficStats.timestamp >= since)
+                .order_by(IpsecTrafficStats.timestamp.asc())
+            )
+            stats = result.scalars().all()
+            
+            return [
+                {
+                    "timestamp": s.timestamp.isoformat(),
+                    "bytes_in": s.bytes_in_delta,
+                    "bytes_out": s.bytes_out_delta,
+                    "total_in": s.bytes_in,
+                    "total_out": s.bytes_out
+                }
+                for s in stats
+            ]
+            
+        except Exception as e:
+            logger.error(f"Failed to get traffic history: {e}")
+            return []
+    
+    async def cleanup_old_stats(self, db, days: int = 30) -> int:
+        """
+        Remove traffic stats older than X days.
+        
+        Returns:
+            Number of records deleted
+        """
+        from sqlalchemy import delete
+        from modules.strongswan.models import IpsecTrafficStats
+        from datetime import timedelta
+        
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        
+        try:
+            result = await db.execute(
+                delete(IpsecTrafficStats)
+                .where(IpsecTrafficStats.timestamp < cutoff)
+            )
+            await db.commit()
+            deleted = result.rowcount
+            if deleted > 0:
+                logger.info(f"Cleaned up {deleted} old traffic stats records")
+            return deleted
+            
+        except Exception as e:
+            logger.error(f"Failed to cleanup old stats: {e}")
+            await db.rollback()
+            return 0
 
 
 # Singleton instance

@@ -25,9 +25,16 @@ from .models import (
     IKE_ENCRYPTION_OPTIONS, IKE_INTEGRITY_OPTIONS, DH_GROUP_OPTIONS
 )
 from .service import strongswan_service
+from . import tasks
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Start traffic collector background task
+try:
+    tasks.start_collector()
+except Exception as e:
+    logger.warning(f"Could not start traffic collector: {e}")
 
 
 # --- CRYPTO OPTIONS ---
@@ -184,6 +191,9 @@ async def update_tunnel(
     # Update fields
     update_data = data.model_dump(exclude_unset=True)
     for key, value in update_data.items():
+        # Convert None to empty string for local_address (DB doesn't allow NULL)
+        if key == 'local_address' and value is None:
+            value = ''
         setattr(tunnel, key, value)
     
     tunnel.updated_at = datetime.utcnow()
@@ -454,6 +464,43 @@ async def get_tunnel_logs(
         "tunnel_id": tunnel.id,
         "tunnel_name": tunnel.name,
         **logs_data
+    }
+
+
+@router.get("/tunnels/{tunnel_id}/traffic")
+async def get_tunnel_traffic(
+    tunnel_id: str,
+    period: str = "24h",
+    db: AsyncSession = Depends(get_session),
+    _user: User = Depends(require_permission("ipsec.view"))
+):
+    """
+    Get historical traffic statistics for a tunnel.
+    
+    Args:
+        tunnel_id: UUID of the tunnel
+        period: Time period - "1h", "6h", "24h", "7d"
+    """
+    # Validate period
+    if period not in ["1h", "6h", "24h", "7d"]:
+        raise HTTPException(status_code=400, detail="Invalid period. Use: 1h, 6h, 24h, 7d")
+    
+    result = await db.execute(
+        select(IpsecTunnel).where(IpsecTunnel.id == tunnel_id)
+    )
+    tunnel = result.scalar_one_or_none()
+    
+    if not tunnel:
+        raise HTTPException(status_code=404, detail="Tunnel not found")
+    
+    data = await strongswan_service.get_traffic_history(tunnel.id, period, db)
+    
+    return {
+        "tunnel_id": str(tunnel.id),
+        "tunnel_name": tunnel.name,
+        "period": period,
+        "data_points": len(data),
+        "data": data
     }
 
 

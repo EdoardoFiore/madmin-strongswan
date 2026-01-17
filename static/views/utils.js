@@ -199,6 +199,23 @@ export function getSelectedPfsGroups() {
     return getSelectedValues('pfs-checkbox');
 }
 
+// DH checkboxes for Phase 1 (version-specific)
+export function dhCheckboxes(version, selectedValues = ['modp2048']) {
+    const groups = getDhGroups(version);
+    return groups.map(g => `
+        <div class="form-check form-check-inline">
+            <input class="form-check-input dh-checkbox" type="checkbox" 
+                   id="dh-${g.value}" value="${g.value}"
+                   ${selectedValues.includes(g.value) ? 'checked' : ''}>
+            <label class="form-check-label small" for="dh-${g.value}">${g.label}</label>
+        </div>
+    `).join('');
+}
+
+export function getSelectedDhGroups() {
+    return getSelectedValues('dh-checkbox');
+}
+
 // Loading spinner
 export function loadingSpinner() {
     return `<div class="text-center py-4">

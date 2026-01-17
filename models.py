@@ -118,6 +118,32 @@ class IpsecChildSa(SQLModel, table=True):
     tunnel: "IpsecTunnel" = Relationship(back_populates="child_sas")
 
 
+class IpsecTrafficStats(SQLModel, table=True):
+    """
+    Historical traffic statistics for IPsec tunnels.
+    
+    Collected periodically to enable historical traffic charts.
+    Data is aggregated from all Child SAs of a tunnel.
+    """
+    __tablename__ = "ipsec_traffic_stats"
+    
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    tunnel_id: uuid.UUID = Field(foreign_key="ipsec_tunnel.id", index=True)
+    
+    # Traffic counters (cumulative values at collection time)
+    bytes_in: int = Field(default=0)
+    bytes_out: int = Field(default=0)
+    packets_in: int = Field(default=0)
+    packets_out: int = Field(default=0)
+    
+    # Delta values (difference from previous collection)
+    bytes_in_delta: int = Field(default=0)
+    bytes_out_delta: int = Field(default=0)
+    
+    # Timestamp for this data point
+    timestamp: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+
 # --- Pydantic Schemas for API ---
 
 class IpsecTunnelCreate(SQLModel):

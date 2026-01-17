@@ -11,7 +11,7 @@ async def upgrade(session: AsyncSession) -> None:
     """Create IPsec module tables."""
     # Import models to register them in SQLModel metadata
     from modules.strongswan.models import (
-        IpsecTunnel, IpsecChildSa
+        IpsecTunnel, IpsecChildSa, IpsecTrafficStats
     )
     
     # Import the engine directly from database module

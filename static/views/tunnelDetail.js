@@ -294,7 +294,15 @@ function renderDetail(container, tunnelId) {
                         <h5 class="card-title mb-0">
                             <i class="ti ti-chart-area me-2"></i>Traffico
                         </h5>
-                        <span class="text-muted small" id="traffic-stats-label">--</span>
+                        <div class="d-flex align-items-center gap-2">
+                            <select class="form-select form-select-sm" id="traffic-period" style="width: auto;">
+                                <option value="1h">Ultima ora</option>
+                                <option value="6h">Ultime 6 ore</option>
+                                <option value="24h" selected>Ultime 24 ore</option>
+                                <option value="7d">Ultimi 7 giorni</option>
+                            </select>
+                            <span class="text-muted small" id="traffic-stats-label">--</span>
+                        </div>
                     </div>
                     <div class="card-body">
                         <div id="traffic-chart" style="height: 180px;"></div>
@@ -513,6 +521,11 @@ function setupDetailEvents(tunnelId) {
     document.getElementById('btn-refresh-logs')?.addEventListener('click', () => {
         loadLogs(tunnelId);
     });
+
+    // Traffic period selector
+    document.getElementById('traffic-period')?.addEventListener('change', () => {
+        loadTrafficStats(tunnelId);
+    });
 }
 
 // Traffic stats history for chart
@@ -527,38 +540,47 @@ function formatBytes(bytes) {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
-async function loadTrafficStats(tunnelId) {
+async function loadTrafficStats(tunnelId, period = null) {
     try {
-        const status = await apiGet(`/modules/strongswan/tunnels/${tunnelId}/status`);
+        // Use selected period or get from dropdown
+        const selectedPeriod = period || document.getElementById('traffic-period')?.value || '24h';
 
-        // Aggregate traffic from all child SAs
+        // Fetch historical data
+        const response = await apiGet(`/modules/strongswan/tunnels/${tunnelId}/traffic?period=${selectedPeriod}`);
+
+        // Process data for chart
+        trafficHistory.labels = [];
+        trafficHistory.in = [];
+        trafficHistory.out = [];
         let totalIn = 0;
         let totalOut = 0;
 
-        if (status.child_sas) {
-            status.child_sas.forEach(c => {
-                totalIn += c.bytes_in || 0;
-                totalOut += c.bytes_out || 0;
+        if (response.data && response.data.length > 0) {
+            response.data.forEach(point => {
+                // Format timestamp based on period
+                const date = new Date(point.timestamp);
+                let label;
+                if (selectedPeriod === '1h' || selectedPeriod === '6h') {
+                    label = date.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+                } else if (selectedPeriod === '24h') {
+                    label = date.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+                } else {
+                    label = date.toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit', hour: '2-digit' });
+                }
+
+                trafficHistory.labels.push(label);
+                trafficHistory.in.push(point.bytes_in || 0);
+                trafficHistory.out.push(point.bytes_out || 0);
+                totalIn += point.bytes_in || 0;
+                totalOut += point.bytes_out || 0;
             });
         }
 
-        // Update display
+        // Update display with totals
         document.getElementById('traffic-in').textContent = formatBytes(totalIn);
         document.getElementById('traffic-out').textContent = formatBytes(totalOut);
         document.getElementById('traffic-stats-label').textContent =
-            `${status.child_sas?.length || 0} SA attive`;
-
-        // Add to history for chart (max 10 points)
-        const now = new Date();
-        trafficHistory.labels.push(now.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }));
-        trafficHistory.in.push(totalIn);
-        trafficHistory.out.push(totalOut);
-
-        if (trafficHistory.labels.length > 10) {
-            trafficHistory.labels.shift();
-            trafficHistory.in.shift();
-            trafficHistory.out.shift();
-        }
+            `${response.data_points || 0} punti`;
 
         // Render chart
         renderTrafficChart();
@@ -567,6 +589,7 @@ async function loadTrafficStats(tunnelId) {
         console.error('Failed to load traffic stats', e);
         document.getElementById('traffic-in').textContent = '--';
         document.getElementById('traffic-out').textContent = '--';
+        document.getElementById('traffic-stats-label').textContent = 'Errore';
     }
 }
 

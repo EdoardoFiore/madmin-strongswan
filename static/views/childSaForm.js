@@ -5,9 +5,8 @@
  */
 
 import {
-    apiPost, apiPatch, apiPut, showToast, escapeHtml,
-    CRYPTO_OPTIONS, selectOptions, pfsCheckboxes, getSelectedPfsGroups,
-    renderCheckboxGroup, getSelectedValues, parseProposal
+    apiPost, apiPut, showToast, escapeHtml,
+    CRYPTO_OPTIONS, selectOptions, parseProposal
 } from '/static/modules/strongswan/views/utils.js';
 
 // Custom CSS for rounded inputs
@@ -66,6 +65,35 @@ function isValidCidr(value) {
     if (prefix < 0 || prefix > 32) return false;
 
     return true;
+}
+
+// Counter for unique proposal pair IDs
+let proposalPairCounter = 0;
+
+// Render a single proposal pair row
+function renderProposalPair(index, enc = 'aes256', integ = 'sha256') {
+    const id = proposalPairCounter++;
+    return `
+        <div class="row g-2 mb-2 proposal-pair" data-pair-id="${id}">
+            <div class="col-5">
+                <select class="form-select form-select-sm proposal-enc">
+                    ${selectOptions(CRYPTO_OPTIONS.encryption.common, enc)}
+                </select>
+            </div>
+            <div class="col-5">
+                <select class="form-select form-select-sm proposal-integ">
+                    ${selectOptions(CRYPTO_OPTIONS.integrity.common, integ)}
+                </select>
+            </div>
+            <div class="col-2 d-flex align-items-center">
+                ${index > 0 ? `
+                    <button type="button" class="btn btn-sm btn-outline-danger btn-remove-proposal" data-pair-id="${id}">
+                        <i class="ti ti-trash"></i>
+                    </button>
+                ` : '<span class="text-muted small">Primario</span>'}
+            </div>
+        </div>
+    `;
 }
 
 export function renderChildSaForm(tunnelId, onSave, initialData = null) {
@@ -128,42 +156,32 @@ export function renderChildSaForm(tunnelId, onSave, initialData = null) {
                 <!-- Advanced Options -->
                 <div class="collapse show" id="phase2-advanced">
                     <div class="card card-body bg-white py-3">
-                        <!-- ESP Proposal -->
-                        <h6 class="small text-muted mb-2">Phase 2 Proposal (ESP)</h6>
-                        <div class="row g-2 mb-3">
-                            <div class="col-md-4">
-                                <label class="form-label small mb-1">Encryption (Seleziona multipli)</label>
-                                <div class="crypto-group">
-                                    ${renderCheckboxGroup('enc-checkbox', CRYPTO_OPTIONS.encryption.common, selEnc)}
-                                </div>
-                            </div>
-                            <div class="col-md-4">
-                                <label class="form-label small mb-1">Authentication (Seleziona multipli)</label>
-                                <div class="crypto-group">
-                                    ${renderCheckboxGroup('auth-checkbox', CRYPTO_OPTIONS.integrity.common, selInteg)}
-                                </div>
-                            </div>
-                            <div class="col-md-4">
-                                <label class="form-label small mb-1">Diffie-Hellman (PFS)</label>
-                                <div class="crypto-group">
-                                    ${renderCheckboxGroup('pfs-checkbox', CRYPTO_OPTIONS.pfsGroups, selDh)}
-                                </div>
-                            </div>
+                        <!-- ESP Proposal Pairs -->
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <h6 class="small text-muted mb-0">Phase 2 Proposal (ESP)</h6>
+                            <button type="button" class="btn btn-sm btn-outline-primary" id="btn-add-proposal">
+                                <i class="ti ti-plus"></i> Aggiungi Proposal
+                            </button>
                         </div>
                         
-                        <div class="row g-2 mb-3">
+                        <div id="proposal-pairs-container">
+                            ${renderProposalPair(0, selEnc[0] || 'aes256', selInteg[0] || 'sha256')}
+                        </div>
+                        
+                        <div class="row g-2 mb-3 mt-2">
+                            <div class="col-md-6">
+                                <label class="form-label small mb-1">PFS Group</label>
+                                <select class="form-select form-select-sm" id="phase2-pfs">
+                                    <option value="">Nessuno (No PFS)</option>
+                                    ${selectOptions(CRYPTO_OPTIONS.pfsGroups, selDh[0] || 'modp2048')}
+                                </select>
+                            </div>
                             <div class="col-md-6">
                                 <label class="form-label small mb-1">Key Lifetime (sec)</label>
                                 <input type="number" class="form-control form-control-sm" id="phase2-lifetime" 
                                        value="${data.esp_lifetime || 43200}" min="300" max="172800">
                             </div>
-                            <div class="col-md-6">
-             <!-- Empty column for spacing/future use -->
-                            </div>
                         </div>
-                        
-                        <!-- PFS Enabled Logic handled by selecting 0 or more groups -->
-                        <div class="form-text small mb-2 text-muted">Seleziona almeno un gruppo DH per abilitare PFS.</div>
 
                         <!-- Actions -->
                         <h6 class="small text-muted mb-2">Connection Actions</h6>
@@ -220,20 +238,23 @@ export function setupChildSaFormEvents(tunnelId, onSave) {
             return;
         }
 
-        // Build ESP proposal
-        const selEnc = getSelectedValues('enc-checkbox');
-        const selAuth = getSelectedValues('auth-checkbox');
-        const selDh = getSelectedValues('pfs-checkbox');
+        // Build ESP proposal from all pairs
+        const pairs = document.querySelectorAll('.proposal-pair');
+        const pfsGroup = document.getElementById('phase2-pfs').value;
+        const proposals = [];
 
-        if (selEnc.length === 0) {
-            showToast('Seleziona almeno un algoritmo di crittografia', 'error');
-            return;
-        }
+        pairs.forEach(pair => {
+            const enc = pair.querySelector('.proposal-enc').value;
+            const integ = pair.querySelector('.proposal-integ').value;
+            let proposal = `${enc}-${integ}`;
+            if (pfsGroup) {
+                proposal += `-${pfsGroup}`;
+            }
+            proposals.push(proposal);
+        });
 
-        // Construct string: enc1-enc2-auth1-auth2-dh1-dh2
-        const parts = [...selEnc, ...selAuth, ...selDh];
-        const espProposal = parts.join('-');
-        // Example: aes256-aes128-sha256-modp2048
+        // Join proposals with comma for strongswan format
+        const espProposal = proposals.join(',');
 
         btn.disabled = true;
         btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
@@ -244,7 +265,7 @@ export function setupChildSaFormEvents(tunnelId, onSave) {
             remote_ts: remoteTs,
             esp_proposal: espProposal,
             esp_lifetime: parseInt(document.getElementById('phase2-lifetime')?.value) || 43200,
-            pfs_group: selDh.length > 0 ? selDh[0] : null, // Legacy field, just take first
+            pfs_group: pfsGroup || null,
             start_action: document.getElementById('phase2-start')?.value || 'trap',
             close_action: document.getElementById('phase2-close')?.value || 'restart'
         };
@@ -274,5 +295,24 @@ export function setupChildSaFormEvents(tunnelId, onSave) {
         document.getElementById('btn-add-phase2')?.classList.remove('d-none');
         // If editing row-inline, we might need logic to unhide row? 
         // For now form is separate block.
+    });
+
+    // Add new proposal pair
+    document.getElementById('btn-add-proposal')?.addEventListener('click', () => {
+        const container = document.getElementById('proposal-pairs-container');
+        if (container) {
+            const pairCount = container.querySelectorAll('.proposal-pair').length;
+            container.insertAdjacentHTML('beforeend', renderProposalPair(pairCount, 'aes128', 'sha256'));
+        }
+    });
+
+    // Remove proposal pair (event delegation)
+    document.getElementById('proposal-pairs-container')?.addEventListener('click', (e) => {
+        const removeBtn = e.target.closest('.btn-remove-proposal');
+        if (removeBtn) {
+            const pairId = removeBtn.dataset.pairId;
+            const pair = document.querySelector(`.proposal-pair[data-pair-id="${pairId}"]`);
+            pair?.remove();
+        }
     });
 }

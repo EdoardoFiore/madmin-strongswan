@@ -8,7 +8,7 @@
 import {
     apiPost, apiPatch, showToast, escapeHtml,
     CRYPTO_OPTIONS, getEncryptionOptions, getDhGroups,
-    buildProposal, parseProposal, selectOptions, dhCheckboxes, getSelectedDhGroups
+    buildProposal, parseProposal, selectOptions
 } from '/static/modules/strongswan/views/utils.js';
 
 let currentTunnel = null;
@@ -205,14 +205,13 @@ export function showTunnelForm(tunnel, onSave) {
                                         </select>
                                     </div>
                                 </div>
-                                <div class="mb-3">
-                                    <label class="form-label">Diffie-Hellman Group</label>
-                                    <div id="dh-groups-container" class="p-2 border rounded bg-light">
-                                        ${dhCheckboxes(ikeVersion, [proposal.dh])}
-                                    </div>
-                                    <small class="form-hint">Seleziona uno o più gruppi DH</small>
-                                </div>
                                 <div class="row">
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">Diffie-Hellman Group</label>
+                                        <select class="form-select" id="tunnel-dh">
+                                            ${selectOptions(getDhGroups(ikeVersion), proposal.dh || 'modp2048')}
+                                        </select>
+                                    </div>
                                     <div class="col-md-6 mb-3">
                                         <label class="form-label">Key Lifetime (secondi)</label>
                                         <input type="number" class="form-control" id="tunnel-lifetime" 
@@ -287,18 +286,25 @@ function updateIkeVersionOptions(version) {
         modeContainer.style.display = version === '1' ? '' : 'none';
     }
 
-    // Update encryption options
+    // Update encryption options (default: aes256)
     const encSelect = document.getElementById('tunnel-encryption');
-    const currentEnc = encSelect?.value;
     if (encSelect) {
-        encSelect.innerHTML = selectOptions(getEncryptionOptions(version), currentEnc);
+        const currentEnc = encSelect.value;
+        encSelect.innerHTML = selectOptions(getEncryptionOptions(version), currentEnc || 'aes256');
     }
 
-    // Update DH groups
-    const dhContainer = document.getElementById('dh-groups-container');
-    const selectedDh = getSelectedDhGroups();
-    if (dhContainer) {
-        dhContainer.innerHTML = dhCheckboxes(version, selectedDh.length ? selectedDh : ['modp2048']);
+    // Update integrity/authentication options (default: sha256)
+    const integSelect = document.getElementById('tunnel-integrity');
+    if (integSelect) {
+        const currentInteg = integSelect.value;
+        integSelect.innerHTML = selectOptions(CRYPTO_OPTIONS.integrity.common, currentInteg || 'sha256');
+    }
+
+    // Update DH dropdown options (default: modp2048)
+    const dhSelect = document.getElementById('tunnel-dh');
+    if (dhSelect) {
+        const currentDh = dhSelect.value;
+        dhSelect.innerHTML = selectOptions(getDhGroups(version), currentDh || 'modp2048');
     }
 }
 
@@ -329,7 +335,7 @@ async function saveTunnel() {
     const remoteId = document.getElementById('tunnel-remote-id').value.trim() || null;
     const encryption = document.getElementById('tunnel-encryption').value;
     const integrity = document.getElementById('tunnel-integrity').value;
-    const dhGroups = getSelectedDhGroups();
+    const dhGroup = document.getElementById('tunnel-dh').value;
     const lifetime = parseInt(document.getElementById('tunnel-lifetime').value) || 86400;
 
     // Validation
@@ -345,13 +351,9 @@ async function saveTunnel() {
         showToast('Inserisci la Pre-shared Key', 'error');
         return;
     }
-    if (dhGroups.length === 0) {
-        showToast('Seleziona almeno un DH Group', 'error');
-        return;
-    }
 
-    // Build proposal string (first DH group for now)
-    const proposal = buildProposal(encryption, integrity, dhGroups[0]);
+    // Build proposal string
+    const proposal = buildProposal(encryption, integrity, dhGroup);
 
     const data = {
         name,
