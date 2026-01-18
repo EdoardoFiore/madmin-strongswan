@@ -97,11 +97,27 @@ def run():
     try:
         # Enable ike_name to show tunnel name in logs
         logging_content = """# MADMIN - StrongSwan Logging Configuration
+charon {
+    journal {
+        default = 1
+        ike = 2
+        cfg = 2
+        net = 1
+        ike_name = yes
+    }
+    syslog {
+        default = 1
+        ike = 2
+        cfg = 2
+        ike_name = yes
+    }
+}
+
 charon-systemd {
     journal {
-        # Enable default logging to systemd journal
         default = 1
-        # Include connection name (IKE_SA name) in logs
+        ike = 2
+        cfg = 2
         ike_name = yes
     }
 }
