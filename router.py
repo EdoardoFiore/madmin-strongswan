@@ -18,10 +18,12 @@ from core.auth.dependencies import require_permission
 from core.auth.models import User
 
 from .models import (
-    IpsecTunnel, IpsecChildSa,
+    IpsecTunnel, IpsecChildSa, IpsecTunnelFirewallRule,
     IpsecTunnelCreate, IpsecTunnelUpdate, IpsecTunnelRead,
     IpsecChildSaCreate, IpsecChildSaUpdate, IpsecChildSaRead,
     IpsecTunnelStatus,
+    IpsecFirewallRuleCreate, IpsecFirewallRuleRead, IpsecFirewallRuleUpdate,
+    IpsecChildSaFirewallPolicyUpdate, IpsecFirewallRulesOrderUpdate,
     IKE_ENCRYPTION_OPTIONS, IKE_INTEGRITY_OPTIONS, DH_GROUP_OPTIONS
 )
 from .service import strongswan_service
@@ -840,7 +842,279 @@ async def stop_child_sa(
     return {"status": "stopped", "name": child.name}
 
 
-# --- HELPER FUNCTIONS ---
+"""
+IPsec Firewall API Endpoints
+
+Add these endpoints to router.py before the "HELPER FUNCTIONS" section.
+"""
+
+# --- FIREWALL RULES ---
+
+@router.get("/tunnels/{tunnel_id}/children/{child_id}/firewall/rules", response_model=List[IpsecFirewallRuleRead])
+async def list_firewall_rules(
+    tunnel_id: str,
+    child_id: str,
+    db: AsyncSession = Depends(get_session),
+    _user: User = Depends(require_permission("ipsec.view"))
+):
+    """List all firewall rules for a Child SA."""
+    result = await db.execute(
+        select(IpsecChildSa)
+        .where(IpsecChildSa.id == child_id, IpsecChildSa.tunnel_id == tunnel_id)
+        .options(selectinload(IpsecChildSa.firewall_rules))
+    )
+    child = result.scalar_one_or_none()
+    
+    if not child:
+        raise HTTPException(status_code=404, detail="Child SA not found")
+    
+    return sorted(child.firewall_rules, key=lambda r: r.order)
+
+
+@router.post("/tunnels/{tunnel_id}/children/{child_id}/firewall/rules", response_model=IpsecFirewallRuleRead)
+async def create_firewall_rule(
+    tunnel_id: str,
+    child_id: str,
+    data: IpsecFirewallRuleCreate,
+    db: AsyncSession = Depends(get_session),
+    _user: User = Depends(require_permission("ipsec.manage"))
+):
+    """Create a new firewall rule for a Child SA."""
+    result = await db.execute(
+        select(IpsecChildSa)
+        .where(IpsecChildSa.id == child_id, IpsecChildSa.tunnel_id == tunnel_id)
+        .options(selectinload(IpsecChildSa.tunnel))
+    )
+    child = result.scalar_one_or_none()
+    
+    if not child:
+        raise HTTPException(status_code=404, detail="Child SA not found")
+    
+    # Get current max order
+    existing_result = await db.execute(
+        select(IpsecTunnelFirewallRule)
+        .where(IpsecTunnelFirewallRule.child_sa_id == child_id)
+        .order_by(IpsecTunnelFirewallRule.order.desc())
+        .limit(1)
+    )
+    last_rule = existing_result.scalar_one_or_none()
+    next_order = (last_rule.order + 1) if last_rule else 0
+    
+    # Create rule
+    rule = IpsecTunnelFirewallRule(**data.model_dump(), order=next_order)
+    db.add(rule)
+    await db.commit()
+    await db.refresh(rule)
+    
+    # Refresh firewall chains
+    tunnel = child.tunnel
+    all_children_result = await db.execute(
+        select(IpsecChildSa)
+        .where(IpsecChildSa.tunnel_id == tunnel.id)
+        .options(selectinload(IpsecChildSa.firewall_rules))
+    )
+    all_children = all_children_result.scalars().all()
+    
+    await run_in_threadpool(
+        strongswan_service.setup_tunnel_firewall_chains,
+        tunnel, all_children, db
+    )
+    
+    logger.info(f"Created firewall rule for Child SA {child.name}")
+    
+    return rule
+
+
+@router.patch("/tunnels/{tunnel_id}/children/{child_id}/firewall/rules/{rule_id}", response_model=IpsecFirewallRuleRead)
+async def update_firewall_rule(
+    tunnel_id: str,
+    child_id: str,
+    rule_id: str,
+    data: IpsecFirewallRuleUpdate,
+    db: AsyncSession = Depends(get_session),
+    _user: User = Depends(require_permission("ipsec.manage"))
+):
+    """Update a firewall rule."""
+    result = await db.execute(
+        select(IpsecTunnelFirewallRule)
+        .where(IpsecTunnelFirewallRule.id == rule_id)
+        .where(IpsecTunnelFirewallRule.child_sa_id == child_id)
+        .options(selectinload(IpsecTunnelFirewallRule.child_sa).selectinload(IpsecChildSa.tunnel))
+    )
+    rule = result.scalar_one_or_none()
+    
+    if not rule:
+        raise HTTPException(status_code=404, detail="Firewall rule not found")
+    
+    # Update fields
+    update_data = data.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(rule, key, value)
+    
+    await db.commit()
+    await db.refresh(rule)
+    
+    # Refresh firewall chains
+    tunnel = rule.child_sa.tunnel
+    all_children_result = await db.execute(
+        select(IpsecChildSa)
+        .where(IpsecChildSa.tunnel_id == tunnel.id)
+        .options(selectinload(IpsecChildSa.firewall_rules))
+    )
+    all_children = all_children_result.scalars().all()
+    
+    await run_in_threadpool(
+        strongswan_service.setup_tunnel_firewall_chains,
+        tunnel, all_children, db
+    )
+    
+    logger.info(f"Updated firewall rule {rule_id}")
+    
+    return rule
+
+
+@router.delete("/tunnels/{tunnel_id}/children/{child_id}/firewall/rules/{rule_id}")
+async def delete_firewall_rule(
+    tunnel_id: str,
+    child_id: str,
+    rule_id: str,
+    db: AsyncSession = Depends(get_session),
+    _user: User = Depends(require_permission("ipsec.manage"))
+):
+    """Delete a firewall rule."""
+    result = await db.execute(
+        select(IpsecTunnelFirewallRule)
+        .where(IpsecTunnelFirewallRule.id == rule_id)
+        .where(IpsecTunnelFirewallRule.child_sa_id == child_id)
+        .options(selectinload(IpsecTunnelFirewallRule.child_sa).selectinload(IpsecChildSa.tunnel))
+    )
+    rule = result.scalar_one_or_none()
+    
+    if not rule:
+        raise HTTPException(status_code=404, detail="Firewall rule not found")
+    
+    tunnel = rule.child_sa.tunnel
+    name = rule.description or f"Rule {rule_id[:8]}"
+    
+    await db.delete(rule)
+    await db.commit()
+    
+    # Refresh firewall chains
+    all_children_result = await db.execute(
+        select(IpsecChildSa)
+        .where(IpsecChildSa.tunnel_id == tunnel.id)
+        .options(selectinload(IpsecChildSa.firewall_rules))
+    )
+    all_children = all_children_result.scalars().all()
+    
+    await run_in_threadpool(
+        strongswan_service.setup_tunnel_firewall_chains,
+        tunnel, all_children, db
+    )
+    
+    logger.info(f"Deleted firewall rule {name}")
+    
+    return {"status": "deleted", "name": name}
+
+
+@router.put("/tunnels/{tunnel_id}/children/{child_id}/firewall/rules/order")
+async def reorder_firewall_rules(
+    tunnel_id: str,
+    child_id: str,
+    data: IpsecFirewallRulesOrderUpdate,
+    db: AsyncSession = Depends(get_session),
+    _user: User = Depends(require_permission("ipsec.manage"))
+):
+    """Update ordering of firewall rules."""
+    result = await db.execute(
+        select(IpsecChildSa)
+        .where(IpsecChildSa.id == child_id, IpsecChildSa.tunnel_id == tunnel_id)
+        .options(selectinload(IpsecChildSa.tunnel))
+    )
+    child = result.scalar_one_or_none()
+    
+    if not child:
+        raise HTTPException(status_code=404, detail="Child SA not found")
+    
+    # Update order for each rule
+    for rule_data in data.rules:
+        rule_id = rule_data.get("id")
+        new_order = rule_data.get("order")
+        
+        if rule_id and new_order is not None:
+            rule_result = await db.execute(
+                select(IpsecTunnelFirewallRule)
+                .where(IpsecTunnelFirewallRule.id == rule_id)
+                .where(IpsecTunnelFirewallRule.child_sa_id == child_id)
+            )
+            rule = rule_result.scalar_one_or_none()
+            if rule:
+                rule.order = new_order
+    
+    await db.commit()
+    
+    # Refresh firewall chains
+    tunnel = child.tunnel
+    all_children_result = await db.execute(
+        select(IpsecChildSa)
+        .where(IpsecChildSa. tunnel_id == tunnel.id)
+        .options(selectinload(IpsecChildSa.firewall_rules))
+    )
+    all_children = all_children_result.scalars().all()
+    
+    await run_in_threadpool(
+        strongswan_service.setup_tunnel_firewall_chains,
+        tunnel, all_children, db
+    )
+    
+    logger.info(f"Reordered firewall rules for Child SA {child.name}")
+    
+    return {"status": "reordered", "count": len(data.rules)}
+
+
+@router.patch("/tunnels/{tunnel_id}/children/{child_id}/firewall/policy")
+async def update_default_policy(
+    tunnel_id: str,
+    child_id: str,
+    data: IpsecChildSaFirewallPolicyUpdate,
+    db: AsyncSession = Depends(get_session),
+    _user: User = Depends(require_permission("ipsec.manage"))
+):
+    """Update default firewall policy for a Child SA."""
+    result = await db.execute(
+        select(IpsecChildSa)
+        .where(IpsecChildSa.id == child_id, IpsecChildSa.tunnel_id == tunnel_id)
+        .options(selectinload(IpsecChildSa.tunnel), selectinload(IpsecChildSa.firewall_rules))
+    )
+    child = result.scalar_one_or_none()
+    
+    if not child:
+        raise HTTPException(status_code=404, detail="Child SA not found")
+    
+    if data.policy not in ["ACCEPT", "DROP"]:
+        raise HTTPException(status_code=400, detail="Policy must be ACCEPT or DROP")
+    
+    child.firewall_default_policy = data.policy
+    await db.commit()
+    
+    # Refresh firewall chains
+    tunnel = child.tunnel
+    all_children_result = await db.execute(
+        select(IpsecChildSa)
+        .where(IpsecChildSa.tunnel_id == tunnel.id)
+        .options(selectinload(IpsecChildSa.firewall_rules))
+    )
+    all_children = all_children_result.scalars().all()
+    
+    await run_in_threadpool(
+        strongswan_service.setup_tunnel_firewall_chains,
+        tunnel, all_children, db
+    )
+    
+    logger.info(f"Updated default policy for Child SA {child.name} to {data.policy}")
+    
+    return {"status": "updated", "policy": data.policy}
+
 
 async def _update_all_secrets(db: AsyncSession):
     """Regenerate secrets file with all tunnels' PSKs."""

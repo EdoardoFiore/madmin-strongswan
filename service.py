@@ -941,5 +941,152 @@ connections {{
             return 0
 
 
+    # --- Firewall Chain Management ---
+    
+    def _truncate_chain_name(self, tunnel_name: str, child_sa_num: int, direction: str) -> str:
+        """
+        Generate chain name with truncation if needed to stay under iptables limit.
+        """
+        import hashlib
+        
+        prefix = "IPSEC_"
+        suffix = f"_{child_sa_num}_{direction}"
+        max_length = 29
+        available = max_length - len(prefix) - len(suffix)
+        
+        if len(tunnel_name) <= available:
+            return f"{prefix}{tunnel_name}{suffix}"
+        
+        hash_short = hashlib.md5(tunnel_name.encode()).hexdigest()[:3]
+        truncated = tunnel_name[:available - 4]
+        return f"{prefix}{truncated}_{hash_short}{suffix}"
+    
+    async def setup_tunnel_firewall_chains(self, tunnel, child_sas, db) -> bool:
+        """Create firewall chains for all Child SAs of a tunnel."""
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
+        from modules.strongswan.models import IpsecChildSa
+        
+        success = True
+        
+        for idx, child_sa in enumerate(child_sas, start=1):
+            if not child_sa.enabled:
+                logger.debug(f"Skipping disabled Child SA: {child_sa.name}")
+                continue
+            
+            chain_out = self._truncate_chain_name(tunnel.name, idx, "OUT")
+            chain_in = self._truncate_chain_name(tunnel.name, idx, "IN")
+            
+            logger.info(f"Setting up firewall chains: {chain_out}, {chain_in}")
+            
+            self._run_iptables('filter', ['-N', chain_out], suppress_errors=True)
+            self._run_iptables('filter', ['-N', chain_in], suppress_errors=True)
+            self._run_iptables('filter', ['-F', chain_out])
+            self._run_iptables('filter', ['-F', chain_in])
+            
+            comment = f"IPSEC_{tunnel.name}_{idx}"
+            
+            self._run_iptables('filter', [
+                '-A', self.IPSEC_FORWARD_CHAIN,
+                '-s', child_sa.local_ts, '-d', child_sa.remote_ts,
+                '-m', 'comment', '--comment', comment + "_OUT",
+                '-j', chain_out
+            ])
+            
+            self._run_iptables('filter', [
+                '-A', self.IPSEC_FORWARD_CHAIN,
+                '-s', child_sa.remote_ts, '-d', child_sa.local_ts,
+                '-m', 'comment', '--comment', comment + "_IN",
+                '-j', chain_in
+            ])
+            
+            result = await db.execute(
+                select(IpsecChildSa)
+                .where(IpsecChildSa.id == child_sa.id)
+                .options(selectinload(IpsecChildSa.firewall_rules))
+            )
+            child_sa_with_rules = result.scalar_one()
+            
+            success &= self._populate_child_sa_firewall_rules(
+                child_sa_with_rules, chain_out, chain_in
+            )
+        
+        return success
+    
+    def _populate_child_sa_firewall_rules(self, child_sa, chain_out: str, chain_in: str) -> bool:
+        """Populate firewall rules within Child SA chains."""
+        success = True
+        
+        rules_out = [r for r in child_sa.firewall_rules if r.enabled and r.direction in ["out", "both"]]
+        for rule in sorted(rules_out, key=lambda x: x.order):
+            iptables_cmd = self._build_iptables_rule(rule, chain_out)
+            if iptables_cmd:
+                success &= self._run_iptables('filter', iptables_cmd)
+        
+        self._run_iptables('filter', ['-A', chain_out, '-j', child_sa.firewall_default_policy])
+        
+        rules_in = [r for r in child_sa.firewall_rules if r.enabled and r.direction in ["in", "both"]]
+        for rule in sorted(rules_in, key=lambda x: x.order):
+            iptables_cmd = self._build_iptables_rule(rule, chain_in)
+            if iptables_cmd:
+                success &= self._run_iptables('filter', iptables_cmd)
+        
+        self._run_iptables('filter', ['-A', chain_in, '-j', child_sa.firewall_default_policy])
+        
+        return success
+    
+    def _build_iptables_rule(self, rule, chain: str):
+        """Convert firewall rule model to iptables command arguments."""
+        cmd = ['-A', chain]
+        
+        if rule.protocol and rule.protocol != "all":
+            cmd.extend(['-p', rule.protocol])
+        if rule.source:
+            cmd.extend(['-s', rule.source])
+        if rule.destination:
+            cmd.extend(['-d', rule.destination])
+        if rule.port and rule.protocol in ["tcp", "udp"]:
+            cmd.extend(['--dport', rule.port])
+        if rule.description:
+            cmd.extend(['-m', 'comment', '--comment', rule.description[:255]])
+        
+        cmd.extend(['-j', rule.action])
+        return cmd
+    
+    async def remove_tunnel_firewall_chains(self, tunnel, child_sas) -> bool:
+        """Remove all firewall chains for a tunnel."""
+        success = True
+        
+        for idx, child_sa in enumerate(child_sas, start=1):
+            chain_out = self._truncate_chain_name(tunnel.name, idx, "OUT")
+            chain_in = self._truncate_chain_name(tunnel.name, idx, "IN")
+            
+            logger.info(f"Removing firewall chains: {chain_out}, {chain_in}")
+            
+            try:
+                result = subprocess.run(
+                    ['iptables', '-t', 'filter', '-S', self.IPSEC_FORWARD_CHAIN],
+                    capture_output=True, text=True
+                )
+                
+                if result.returncode == 0:
+                    rules = result.stdout.strip().split('\n')
+                    for rule in rules:
+                        if f'-j {chain_out}' in rule or f'-j {chain_in}' in rule:
+                            delete_cmd = rule.replace('-A ', '-D ', 1).split()
+                            self._run_iptables('filter', delete_cmd, suppress_errors=True)
+            
+            except Exception as e:
+                logger.error(f"Failed to remove jump rules: {e}")
+                success = False
+            
+            self._run_iptables('filter', ['-F', chain_out], suppress_errors=True)
+            self._run_iptables('filter', ['-X', chain_out], suppress_errors=True)
+            self._run_iptables('filter', ['-F', chain_in], suppress_errors=True)
+            self._run_iptables('filter', ['-X', chain_in], suppress_errors=True)
+        
+        return success
+
+
 # Singleton instance
 strongswan_service = StrongSwanService()

@@ -11,6 +11,7 @@ import {
 } from '/static/modules/strongswan/views/utils.js';
 import { showTunnelForm } from '/static/modules/strongswan/views/tunnelForm.js';
 import { renderChildSaForm, setupChildSaFormEvents } from '/static/modules/strongswan/views/childSaForm.js';
+import { renderFirewallManagement } from '/static/modules/strongswan/views/firewallManagement.js';
 
 let tunnel = null;
 let children = [];
@@ -286,6 +287,20 @@ function renderDetail(container, tunnelId) {
             <div id="phase2-form-container"></div>
         </div>
         
+        <!-- Firewall Rules -->
+        <div class="card mt-3">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="ti ti-shield-lock me-2"></i>Regole Firewall
+                </h5>
+            </div>
+            <div class="card-body" id="firewall-container">
+                <div class="text-center py-3">
+                    <span class="spinner-border spinner-border-sm"></span> Caricamento...
+                </div>
+            </div>
+        </div>
+        
         <!-- Traffic Statistics & Logs Row -->
         <div class="row mt-3">
             <div class="col-lg-6">
@@ -343,6 +358,7 @@ function renderDetail(container, tunnelId) {
     setupDetailEvents(tunnelId);
     loadTrafficStats(tunnelId);
     loadLogs(tunnelId);
+    loadFirewallManagement(tunnelId);
 }
 
 function renderPhase2Table() {
@@ -781,3 +797,19 @@ async function loadLogs(tunnelId) {
         container.innerHTML = `<div class="text-danger text-center py-3">Errore: ${escapeHtml(e.message)}</div>`;
     }
 }
+
+async function loadFirewallManagement(tunnelId) {
+    const container = document.getElementById('firewall-container');
+    try {
+        await renderFirewallManagement(container, tunnelId);
+    } catch (e) {
+        console.error('Failed to load firewall management', e);
+        container.innerHTML = `
+            <div class="alert alert-danger">
+                <i class="ti ti-alert-circle me-2"></i>
+                Errore nel caricamento del firewall: ${escapeHtml(e.message)}
+            </div>
+        `;
+    }
+}
+

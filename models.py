@@ -118,8 +118,15 @@ class IpsecChildSa(SQLModel, table=True):
     
     enabled: bool = Field(default=True)
     
-    # Relationship
+    # Firewall
+    firewall_default_policy: str = Field(default="ACCEPT")  # "ACCEPT" or "DROP"
+    
+    # Relationships
     tunnel: "IpsecTunnel" = Relationship(back_populates="child_sas")
+    firewall_rules: List["IpsecTunnelFirewallRule"] = Relationship(
+        back_populates="child_sa",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"}
+    )
 
 
 class IpsecTrafficStats(SQLModel, table=True):
@@ -149,6 +156,36 @@ class IpsecTrafficStats(SQLModel, table=True):
     
     # Relationship
     tunnel: "IpsecTunnel" = Relationship(back_populates="traffic_stats")
+
+
+class IpsecTunnelFirewallRule(SQLModel, table=True):
+    """
+    Firewall rule for IPsec Child SA.
+    
+    Enables granular traffic control per Child SA with directional rules.
+    Rules are applied in order within dedicated iptables chains per Child SA.
+    """
+    __tablename__ = "ipsec_tunnel_firewall_rule"
+    
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    child_sa_id: uuid.UUID = Field(foreign_key="ipsec_child_sa.id", index=True)
+    
+    # Rule parameters
+    direction: str = Field(default="out")  # "in", "out", "both"
+    action: str  # "ACCEPT", "DROP"
+    protocol: str  # "tcp", "udp", "icmp", "all"
+    source: Optional[str] = None  # Optional CIDR override
+    destination: Optional[str] = None  # Optional CIDR override
+    port: Optional[str] = None  # Single port or range (e.g., "80" or "8000-8100")
+    description: str = Field(default="", max_length=255)
+    
+    # Priority and state
+    order: int = Field(default=0, index=True)
+    enabled: bool = Field(default=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    
+    # Relationship
+    child_sa: "IpsecChildSa" = Relationship(back_populates="firewall_rules")
 
 
 # --- Pydantic Schemas for API ---
@@ -277,6 +314,56 @@ class IpsecTunnelStatus(SQLModel):
     established_time: Optional[int] = None  # Seconds
     rekey_time: Optional[int] = None  # Seconds until rekey
     child_sas: List[dict] = []  # Child SA status
+
+
+class IpsecFirewallRuleCreate(SQLModel):
+    """Schema for creating a firewall rule."""
+    child_sa_id: uuid.UUID
+    direction: str = "out"  # "in", "out", "both"
+    action: str  # "ACCEPT", "DROP"
+    protocol: str  # "tcp", "udp", "icmp", "all"
+    source: Optional[str] = None
+    destination: Optional[str] = None
+    port: Optional[str] = None
+    description: str = ""
+
+
+class IpsecFirewallRuleRead(SQLModel):
+    """Schema for reading a firewall rule."""
+    id: uuid.UUID
+    child_sa_id: uuid.UUID
+    direction: str
+    action: str
+    protocol: str
+    source: Optional[str]
+    destination: Optional[str]
+    port: Optional[str]
+    description: str
+    order: int
+    enabled: bool
+    created_at: datetime
+
+
+class IpsecFirewallRuleUpdate(SQLModel):
+    """Schema for updating a firewall rule."""
+    direction: Optional[str] = None
+    action: Optional[str] = None
+    protocol: Optional[str] = None
+    source: Optional[str] = None
+    destination: Optional[str] = None
+    port: Optional[str] = None
+    description: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+class IpsecChildSaFirewallPolicyUpdate(SQLModel):
+    """Schema for updating Child SA default firewall policy."""
+    policy: str  # "ACCEPT" or "DROP"
+
+
+class IpsecFirewallRulesOrderUpdate(SQLModel):
+    """Schema for reordering firewall rules."""
+    rules: List[dict]  # [{"id": uuid, "order": int}, ...]
 
 
 # --- Algorithm Options for UI ---
