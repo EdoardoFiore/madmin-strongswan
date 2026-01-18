@@ -44,9 +44,8 @@ export async function renderFirewallManagement(container, tunnelId) {
                             data-bs-target="#content-${child.id}" 
                             type="button" 
                             role="tab">
-                        <i class="ti ti-route me-1"></i>
-                        Phase 2 #${idx + 1}
-                        <small class="text-muted ms-1">(${escapeHtml(child.local_ts)} ↔ ${escapeHtml(child.remote_ts)})</small>
+                        <i class="ti ti-network me-2"></i>
+                        <span class="fw-bold">${escapeHtml(child.local_ts)}</span> <i class="ti ti-arrow-right mx-1" style="font-size: 0.8em;"></i> <span class="fw-bold">${escapeHtml(child.remote_ts)}</span>
                     </button>
                 </li>
             `).join('')}
@@ -91,8 +90,8 @@ export async function renderFirewallManagement(container, tunnelId) {
                             <div class="col-md-6 mb-3">
                                 <label class="form-label required">Azione</label>
                                 <select class="form-select" id="rule-action">
-                                    <option value="ACCEPT">✓ ACCEPT (Permetti)</option>
-                                    <option value="DROP">✗ DROP (Blocca)</option>
+                                    <option value="ACCEPT">ACCEPT (Permetti)</option>
+                                    <option value="DROP">DROP (Blocca)</option>
                                 </select>
                             </div>
                             <div class="col-md-6 mb-3">
@@ -176,29 +175,57 @@ async function loadChildFirewall(tunnelId, child) {
         const rulesIn = rules.filter(r => r.direction === 'in' || r.direction === 'both');
 
         container.innerHTML = `
-            <!-- Default Policy -->
+            <!-- Default Policies -->
             <div class="card mb-3">
                 <div class="card-body">
-                    <div class="row align-items-center">
-                        <div class="col">
-                            <h4 class="card-title mb-1">
-                                <i class="ti ti-shield-check me-2"></i>Default Policy
-                            </h4>
-                            <p class="text-muted mb-0">
-                                Azione predefinita per il traffico non corrispondente ad altre regole
-                            </p>
+                    <div class="row">
+                        <!-- Outbound Policy -->
+                        <div class="col-md-6 border-end">
+                            <div class="row align-items-center">
+                                <div class="col">
+                                    <h4 class="card-title mb-1">Default Outbound Policy</h4>
+                                    <p class="text-muted mb-0">
+                                        Per traffico locale → remoto non matchato
+                                    </p>
+                                </div>
+                                <div class="col-auto">
+                                    <div class="form-check form-switch form-check-lg">
+                                        <input class="form-check-input" type="checkbox" 
+                                               id="policy-out-${child.id}" 
+                                               ${child.firewall_policy_out === 'ACCEPT' ? 'checked' : ''}
+                                               onchange="togglePolicy('${tunnelId}', '${child.id}', this.checked, 'out')">
+                                        <label class="form-check-label" for="policy-out-${child.id}">
+                                            <strong id="policy-out-label-${child.id}" class="${child.firewall_policy_out === 'ACCEPT' ? 'text-success' : 'text-danger'}">
+                                                ${child.firewall_policy_out}
+                                            </strong>
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
-                        <div class="col-auto">
-                            <div class="form-check form-switch form-check-lg">
-                                <input class="form-check-input" type="checkbox" 
-                                       id="policy-${child.id}" 
-                                       ${child.firewall_default_policy === 'ACCEPT' ? 'checked' : ''}
-                                       onchange="togglePolicy('${tunnelId}', '${child.id}', this.checked)">
-                                <label class="form-check-label" for="policy-${child.id}">
-                                    <strong id="policy-label-${child.id}" class="${child.firewall_default_policy === 'ACCEPT' ? 'text-success' : 'text-danger'}">
-                                        ${child.firewall_default_policy}
-                                    </strong>
-                                </label>
+                        
+                        <!-- Inbound Policy -->
+                        <div class="col-md-6">
+                            <div class="row align-items-center">
+                                <div class="col">
+                                    <h4 class="card-title mb-1">Default Inbound Policy</h4>
+                                    <p class="text-muted mb-0">
+                                        Per traffico remoto → locale non matchato
+                                    </p>
+                                </div>
+                                <div class="col-auto">
+                                    <div class="form-check form-switch form-check-lg">
+                                        <input class="form-check-input" type="checkbox" 
+                                               id="policy-in-${child.id}" 
+                                               ${child.firewall_policy_in === 'ACCEPT' ? 'checked' : ''}
+                                               onchange="togglePolicy('${tunnelId}', '${child.id}', this.checked, 'in')">
+                                        <label class="form-check-label" for="policy-in-${child.id}">
+                                            <strong id="policy-in-label-${child.id}" class="${child.firewall_policy_in === 'ACCEPT' ? 'text-success' : 'text-danger'}">
+                                                ${child.firewall_policy_in}
+                                            </strong>
+                                        </label>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -293,15 +320,14 @@ function renderRulesTable(rules, tunnelId, childId, direction) {
         <table class="table table-vcenter card-table" id="rules-${direction}-${childId}">
             <thead>
                 <tr>
-                    <th width="30"><i class="ti ti-grip-vertical"></i></th>
-                    <th>Direzione</th>
+                    <th width="40">#</th>
                     <th>Azione</th>
                     <th>Protocollo</th>
                     <th>Porta</th>
-                    <th>Source</th>
-                    <th>Destination</th>
-                    <th>Descrizione</th>
-                    <th width="100">Azioni</th>
+                    <th>Sorgente</th>
+                    <th>Destinazione</th>
+                    <th>Commento</th>
+                    <th class="rule-actions"></th>
                 </tr>
             </thead>
             <tbody>
@@ -311,28 +337,23 @@ function renderRulesTable(rules, tunnelId, childId, direction) {
                             <i class="ti ti-grip-vertical text-muted"></i>
                         </td>
                         <td>
-                            ${rule.direction === 'out' ? '<i class="ti ti-arrow-right text-blue"></i> OUT' :
-            rule.direction === 'in' ? '<i class="ti ti-arrow-left text-green"></i> IN' :
-                '<i class="ti ti-arrows-exchange text-purple"></i> BOTH'}
-                        </td>
-                        <td>
                             <span class="badge ${rule.action === 'ACCEPT' ? 'bg-success-lt' : 'bg-danger-lt'}">
-                                ${rule.action === 'ACCEPT' ? '✓' : '✗'} ${rule.action}
+                                ${rule.action}
                             </span>
                         </td>
-                        <td><code class="small">${escapeHtml(rule.protocol)}</code></td>
-                        <td>${rule.port ? `<code class="small">${escapeHtml(rule.port)}</code>` : '-'}</td>
-                        <td>${rule.source ? `<code class="small">${escapeHtml(rule.source)}</code>` : '-'}</td>
-                        <td>${rule.destination ? `<code class="small">${escapeHtml(rule.destination)}</code>` : '-'}</td>
-                        <td>${rule.description ? escapeHtml(rule.description) : '<span class="text-muted">-</span>'}</td>
-                        <td>
-                            <div class="btn-list flex-nowrap">
-                                <button class="btn btn-sm btn-ghost-primary" 
+                        <td>${rule.protocol ? `<code>${escapeHtml(rule.protocol)}</code>` : '<span class="text-muted">tutti</span>'}</td>
+                        <td>${rule.port ? `<code>${escapeHtml(rule.port)}</code>` : '-'}</td>
+                        <td>${rule.source ? `<code>${escapeHtml(rule.source)}</code>` : '-'}</td>
+                        <td>${rule.destination ? `<code>${escapeHtml(rule.destination)}</code>` : '-'}</td>
+                        <td class="text-muted">${rule.description ? escapeHtml(rule.description) : '-'}</td>
+                        <td class="rule-actions">
+                            <div class="btn-group btn-group-sm">
+                                <button class="btn btn-ghost-primary btn-edit" 
                                         onclick="editRule('${tunnelId}', '${childId}', '${rule.id}')" 
                                         title="Modifica">
                                     <i class="ti ti-edit"></i>
                                 </button>
-                                <button class="btn btn-sm btn-ghost-danger" 
+                                <button class="btn btn-ghost-danger btn-delete" 
                                         onclick="deleteRule('${tunnelId}', '${childId}', '${rule.id}')" 
                                         title="Elimina">
                                     <i class="ti ti-trash"></i>
@@ -504,23 +525,25 @@ async function reorderRules(tunnelId, childId, direction) {
 /**
  * Toggle default policy
  */
-window.togglePolicy = async function (tunnelId, childId, isAccept) {
+window.togglePolicy = async function (tunnelId, childId, isAccept, type) {
     const policy = isAccept ? 'ACCEPT' : 'DROP';
+    const payload = type === 'out' ? { policy_out: policy } : { policy_in: policy };
 
     try {
         await apiPatch(
             `/modules/strongswan/tunnels/${tunnelId}/children/${childId}/firewall/policy`,
-            { policy }
+            payload
         );
 
-        const label = document.getElementById(`policy-label-${childId}`);
+        const label = document.getElementById(`policy-${type}-label-${childId}`);
         label.textContent = policy;
         label.className = isAccept ? 'text-success' : 'text-danger';
 
-        showToast(`Policy predefinita impostata su ${policy}`, 'success');
+        const typeLabel = type === 'out' ? 'Outbound' : 'Inbound';
+        showToast(`Policy ${typeLabel} impostata su ${policy}`, 'success');
     } catch (e) {
         showToast(e.message, 'error');
         // Revert checkbox
-        document.getElementById(`policy-${childId}`).checked = !isAccept;
+        document.getElementById(`policy-${type}-${childId}`).checked = !isAccept;
     }
 };

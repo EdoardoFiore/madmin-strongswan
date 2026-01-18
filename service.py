@@ -986,19 +986,23 @@ connections {{
             
             comment = f"IPSEC_{tunnel.name}_{idx}"
             
-            self._run_iptables('filter', [
-                '-A', self.IPSEC_FORWARD_CHAIN,
+            # Check and add OUT jump rule
+            rule_out_args = [
                 '-s', child_sa.local_ts, '-d', child_sa.remote_ts,
                 '-m', 'comment', '--comment', comment + "_OUT",
                 '-j', chain_out
-            ])
+            ]
+            if not self._run_iptables('filter', ['-C', self.IPSEC_FORWARD_CHAIN] + rule_out_args, suppress_errors=True):
+                self._run_iptables('filter', ['-A', self.IPSEC_FORWARD_CHAIN] + rule_out_args)
             
-            self._run_iptables('filter', [
-                '-A', self.IPSEC_FORWARD_CHAIN,
+            # Check and add IN jump rule
+            rule_in_args = [
                 '-s', child_sa.remote_ts, '-d', child_sa.local_ts,
                 '-m', 'comment', '--comment', comment + "_IN",
                 '-j', chain_in
-            ])
+            ]
+            if not self._run_iptables('filter', ['-C', self.IPSEC_FORWARD_CHAIN] + rule_in_args, suppress_errors=True):
+                self._run_iptables('filter', ['-A', self.IPSEC_FORWARD_CHAIN] + rule_in_args)
             
             result = await db.execute(
                 select(IpsecChildSa)
@@ -1023,7 +1027,7 @@ connections {{
             if iptables_cmd:
                 success &= self._run_iptables('filter', iptables_cmd)
         
-        self._run_iptables('filter', ['-A', chain_out, '-j', child_sa.firewall_default_policy])
+        self._run_iptables('filter', ['-A', chain_out, '-j', child_sa.firewall_policy_out])
         
         rules_in = [r for r in child_sa.firewall_rules if r.enabled and r.direction in ["in", "both"]]
         for rule in sorted(rules_in, key=lambda x: x.order):
@@ -1031,7 +1035,7 @@ connections {{
             if iptables_cmd:
                 success &= self._run_iptables('filter', iptables_cmd)
         
-        self._run_iptables('filter', ['-A', chain_in, '-j', child_sa.firewall_default_policy])
+        self._run_iptables('filter', ['-A', chain_in, '-j', child_sa.firewall_policy_in])
         
         return success
     
@@ -1086,6 +1090,36 @@ connections {{
             self._run_iptables('filter', ['-X', chain_in], suppress_errors=True)
         
         return success
+
+    async def remove_specific_firewall_chain(self, tunnel_name: str, index: int):
+        """Remove firewall chains for a specific child SA index."""
+        chain_out = self._truncate_chain_name(tunnel_name, index, "OUT")
+        chain_in = self._truncate_chain_name(tunnel_name, index, "IN")
+        
+        logger.info(f"Removing specific firewall chains: {chain_out}, {chain_in}")
+        
+        # Remove jump rules
+        try:
+            # Note: subprocess.run is blocking, but effectively quick for iptables -S
+            result = subprocess.run(
+                ['iptables', '-t', 'filter', '-S', self.IPSEC_FORWARD_CHAIN],
+                capture_output=True, text=True
+            )
+            
+            if result.returncode == 0:
+                rules = result.stdout.strip().split('\n')
+                for rule in rules:
+                    if f'-j {chain_out}' in rule or f'-j {chain_in}' in rule:
+                        delete_cmd = rule.replace('-A ', '-D ', 1).split()
+                        self._run_iptables('filter', delete_cmd, suppress_errors=True)
+        except Exception as e:
+            logger.error(f"Failed to remove jump rules: {e}")
+            
+        # Flush and delete chains
+        self._run_iptables('filter', ['-F', chain_out], suppress_errors=True)
+        self._run_iptables('filter', ['-X', chain_out], suppress_errors=True)
+        self._run_iptables('filter', ['-F', chain_in], suppress_errors=True)
+        self._run_iptables('filter', ['-X', chain_in], suppress_errors=True)
 
 
 # Singleton instance

@@ -292,6 +292,18 @@ async def delete_tunnel(
     
     # Remove config file
     await run_in_threadpool(strongswan_service.delete_tunnel_config, tunnel.name)
+
+    # Clean up firewall chains for all Child SAs
+    # Must be done before deleting from DB
+    result_children = await db.execute(
+        select(IpsecChildSa)
+        .where(IpsecChildSa.tunnel_id == tunnel.id)
+        .order_by(IpsecChildSa.name)
+    )
+    all_children = result_children.scalars().all()
+    
+    # Pass the full list so indices are calculated correctly during removal
+    await strongswan_service.remove_tunnel_firewall_chains(tunnel, all_children)
     
     # Remove firewall rules
     await run_in_threadpool(strongswan_service.flush_tunnel_forward_rules, tunnel.name)
@@ -718,61 +730,79 @@ async def delete_child_sa(
         select(IpsecChildSa)
         .where(IpsecChildSa.id == child_id)
         .where(IpsecChildSa.tunnel_id == tunnel_id)
+        .options(selectinload(IpsecChildSa.tunnel))
     )
     child = result.scalar_one_or_none()
     
     if not child:
         raise HTTPException(status_code=404, detail="Child SA not found")
     
-    # Remove FORWARD rules
-    await run_in_threadpool(strongswan_service.remove_forward_rules, child.local_ts, child.remote_ts)
+    tunnel = child.tunnel
     
-    # Get tunnel
-    result = await db.execute(
-        select(IpsecTunnel)
-        .options(selectinload(IpsecTunnel.child_sas))
-        .where(IpsecTunnel.id == tunnel_id)
-    )
-    tunnel = result.scalar_one_or_none()
+    # 1. Fetch all current children (including the one to be deleted) to clean up old chains
+    if tunnel:
+        all_children_result = await db.execute(
+            select(IpsecChildSa)
+            .where(IpsecChildSa.tunnel_id == tunnel.id)
+            .order_by(IpsecChildSa.name)
+        )
+        current_children = all_children_result.scalars().all()
+        
+        # Remove ALL firewall chains for this tunnel
+        # This handles shifting indices correctly by wiping the slate clean
+        await strongswan_service.remove_tunnel_firewall_chains(tunnel, current_children)
     
-    # Delete child
+    # 2. Delete child from DB
     await db.delete(child)
-    await db.flush()
+    await db.commit()
     
-    # Regenerate config without deleted child
-    remaining_children = [c for c in tunnel.child_sas if c.id != child.id]
-    child_sas_data = [
-        {
-            "name": c.name,
-            "local_ts": c.local_ts,
-            "remote_ts": c.remote_ts,
-            "esp_proposal": c.esp_proposal,
-            "esp_lifetime": c.esp_lifetime,
-            "start_action": c.start_action,
-            "close_action": c.close_action,
-        }
-        for c in remaining_children if c.enabled
-    ]
+    # 3. Handle remaining children tasks (Firewall & Config)
+    if tunnel:
+        # Fetch remaining children
+        remaining_result = await db.execute(
+            select(IpsecChildSa)
+            .where(IpsecChildSa.tunnel_id == tunnel.id)
+            .order_by(IpsecChildSa.name)
+            .options(selectinload(IpsecChildSa.firewall_rules))
+        )
+        remaining_children = remaining_result.scalars().all()
+        
+        # Setup firewall chains again (with new indices)
+        await strongswan_service.setup_tunnel_firewall_chains(tunnel, remaining_children, db)
+        
+        # Regenerate config
+        child_sas_data = [
+            {
+                "name": c.name,
+                "local_ts": c.local_ts,
+                "remote_ts": c.remote_ts,
+                "esp_proposal": c.esp_proposal,
+                "esp_lifetime": c.esp_lifetime,
+                "start_action": c.start_action,
+                "close_action": c.close_action,
+            }
+            for c in remaining_children if c.enabled
+        ]
+        
+        config = strongswan_service.generate_tunnel_config(
+            tunnel_id=tunnel.id,
+            name=tunnel.name,
+            ike_version=tunnel.ike_version,
+            local_address=tunnel.local_address,
+            remote_address=tunnel.remote_address,
+            local_id=tunnel.local_id,
+            remote_id=tunnel.remote_id,
+            auth_method=tunnel.auth_method,
+            ike_proposal=tunnel.ike_proposal,
+            ike_lifetime=tunnel.ike_lifetime,
+            dpd_action=tunnel.dpd_action,
+            dpd_delay=tunnel.dpd_delay,
+            nat_traversal=tunnel.nat_traversal,
+            child_sas=child_sas_data
+        )
+        await run_in_threadpool(strongswan_service.save_tunnel_config, tunnel.name, config)
     
-    config = strongswan_service.generate_tunnel_config(
-        tunnel_id=tunnel.id,
-        name=tunnel.name,
-        ike_version=tunnel.ike_version,
-        local_address=tunnel.local_address,
-        remote_address=tunnel.remote_address,
-        local_id=tunnel.local_id,
-        remote_id=tunnel.remote_id,
-        auth_method=tunnel.auth_method,
-        ike_proposal=tunnel.ike_proposal,
-        ike_lifetime=tunnel.ike_lifetime,
-        dpd_action=tunnel.dpd_action,
-        dpd_delay=tunnel.dpd_delay,
-        nat_traversal=tunnel.nat_traversal,
-        child_sas=child_sas_data
-    )
-    await run_in_threadpool(strongswan_service.save_tunnel_config, tunnel.name, config)
-    
-    # Reload
+    # Reload connections
     await run_in_threadpool(strongswan_service.load_all_connections)
     
     await db.commit()
@@ -911,14 +941,12 @@ async def create_firewall_rule(
     all_children_result = await db.execute(
         select(IpsecChildSa)
         .where(IpsecChildSa.tunnel_id == tunnel.id)
+        .order_by(IpsecChildSa.name)
         .options(selectinload(IpsecChildSa.firewall_rules))
     )
     all_children = all_children_result.scalars().all()
     
-    await run_in_threadpool(
-        strongswan_service.setup_tunnel_firewall_chains,
-        tunnel, all_children, db
-    )
+    await strongswan_service.setup_tunnel_firewall_chains(tunnel, all_children, db)
     
     logger.info(f"Created firewall rule for Child SA {child.name}")
     
@@ -959,14 +987,12 @@ async def update_firewall_rule(
     all_children_result = await db.execute(
         select(IpsecChildSa)
         .where(IpsecChildSa.tunnel_id == tunnel.id)
+        .order_by(IpsecChildSa.name)
         .options(selectinload(IpsecChildSa.firewall_rules))
     )
     all_children = all_children_result.scalars().all()
     
-    await run_in_threadpool(
-        strongswan_service.setup_tunnel_firewall_chains,
-        tunnel, all_children, db
-    )
+    await strongswan_service.setup_tunnel_firewall_chains(tunnel, all_children, db)
     
     logger.info(f"Updated firewall rule {rule_id}")
     
@@ -1003,14 +1029,12 @@ async def delete_firewall_rule(
     all_children_result = await db.execute(
         select(IpsecChildSa)
         .where(IpsecChildSa.tunnel_id == tunnel.id)
+        .order_by(IpsecChildSa.name)
         .options(selectinload(IpsecChildSa.firewall_rules))
     )
     all_children = all_children_result.scalars().all()
     
-    await run_in_threadpool(
-        strongswan_service.setup_tunnel_firewall_chains,
-        tunnel, all_children, db
-    )
+    await strongswan_service.setup_tunnel_firewall_chains(tunnel, all_children, db)
     
     logger.info(f"Deleted firewall rule {name}")
     
@@ -1057,15 +1081,13 @@ async def reorder_firewall_rules(
     tunnel = child.tunnel
     all_children_result = await db.execute(
         select(IpsecChildSa)
-        .where(IpsecChildSa. tunnel_id == tunnel.id)
+        .where(IpsecChildSa.tunnel_id == tunnel.id)
+        .order_by(IpsecChildSa.name)
         .options(selectinload(IpsecChildSa.firewall_rules))
     )
     all_children = all_children_result.scalars().all()
     
-    await run_in_threadpool(
-        strongswan_service.setup_tunnel_firewall_chains,
-        tunnel, all_children, db
-    )
+    await strongswan_service.setup_tunnel_firewall_chains(tunnel, all_children, db)
     
     logger.info(f"Reordered firewall rules for Child SA {child.name}")
     
@@ -1091,10 +1113,17 @@ async def update_default_policy(
     if not child:
         raise HTTPException(status_code=404, detail="Child SA not found")
     
-    if data.policy not in ["ACCEPT", "DROP"]:
-        raise HTTPException(status_code=400, detail="Policy must be ACCEPT or DROP")
     
-    child.firewall_default_policy = data.policy
+    if data.policy_in:
+        if data.policy_in not in ["ACCEPT", "DROP"]:
+            raise HTTPException(status_code=400, detail="Policy IN must be ACCEPT or DROP")
+        child.firewall_policy_in = data.policy_in
+        
+    if data.policy_out:
+        if data.policy_out not in ["ACCEPT", "DROP"]:
+            raise HTTPException(status_code=400, detail="Policy OUT must be ACCEPT or DROP")
+        child.firewall_policy_out = data.policy_out
+        
     await db.commit()
     
     # Refresh firewall chains
@@ -1102,18 +1131,16 @@ async def update_default_policy(
     all_children_result = await db.execute(
         select(IpsecChildSa)
         .where(IpsecChildSa.tunnel_id == tunnel.id)
+        .order_by(IpsecChildSa.name)
         .options(selectinload(IpsecChildSa.firewall_rules))
     )
     all_children = all_children_result.scalars().all()
     
-    await run_in_threadpool(
-        strongswan_service.setup_tunnel_firewall_chains,
-        tunnel, all_children, db
-    )
+    await strongswan_service.setup_tunnel_firewall_chains(tunnel, all_children, db)
     
-    logger.info(f"Updated default policy for Child SA {child.name} to {data.policy}")
+    logger.info(f"Updated default policy for Child SA {child.name}")
     
-    return {"status": "updated", "policy": data.policy}
+    return {"status": "updated", "policy_in": child.firewall_policy_in, "policy_out": child.firewall_policy_out}
 
 
 async def _update_all_secrets(db: AsyncSession):

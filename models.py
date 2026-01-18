@@ -119,7 +119,8 @@ class IpsecChildSa(SQLModel, table=True):
     enabled: bool = Field(default=True)
     
     # Firewall
-    firewall_default_policy: str = Field(default="ACCEPT")  # "ACCEPT" or "DROP"
+    firewall_policy_in: str = Field(default="ACCEPT")  # "ACCEPT" or "DROP"
+    firewall_policy_out: str = Field(default="ACCEPT")  # "ACCEPT" or "DROP"
     
     # Relationships
     tunnel: "IpsecTunnel" = Relationship(back_populates="child_sas")
@@ -302,6 +303,8 @@ class IpsecChildSaRead(SQLModel):
     close_action: str
     enabled: bool
     is_up: bool = False
+    firewall_policy_in: str = "ACCEPT"
+    firewall_policy_out: str = "ACCEPT"
 
 
 class IpsecTunnelStatus(SQLModel):
@@ -357,8 +360,12 @@ class IpsecFirewallRuleUpdate(SQLModel):
 
 
 class IpsecChildSaFirewallPolicyUpdate(SQLModel):
-    """Schema for updating Child SA default firewall policy."""
-    policy: str  # "ACCEPT" or "DROP"
+    """Schema for updating Child SA default firewall policy.
+    
+    Can update one or both policies.
+    """
+    policy_in: Optional[str] = None
+    policy_out: Optional[str] = None
 
 
 class IpsecFirewallRulesOrderUpdate(SQLModel):
