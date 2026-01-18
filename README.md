@@ -1,6 +1,6 @@
 # IPsec VPN Manager Module
 
-Site-to-Site IPsec VPN management with strongSwan, IKEv1/IKEv2 support, and FortiGate-style configuration.
+Site-to-Site IPsec VPN management with strongSwan, IKEv1/IKEv2 support, per-Child-SA firewall, and FortiGate-style configuration.
 
 ## Features
 
@@ -8,7 +8,8 @@ Site-to-Site IPsec VPN management with strongSwan, IKEv1/IKEv2 support, and Fort
 - **Multiple Phase 2 (Child SA)**: Each tunnel can have multiple Child SAs for different traffic selectors
 - **IKEv1/IKEv2 Support**: Full support for both IKE versions
 - **VICI API Integration**: Real-time tunnel status via strongSwan's VICI protocol
-- **Automatic Firewall Rules**: IPsec traffic rules (UDP 500, 4500, ESP) and FORWARD rules for traffic selectors
+- **Per-Child-SA Firewall**: Granular firewall rules for each Phase 2 with separate IN/OUT policies
+- **Traffic Statistics**: Real-time and historical traffic monitoring with charts
 - **FortiGate-style UI**: Intuitive interface with hierarchical tunnel/Phase 2 display
 
 ## Requirements
@@ -53,12 +54,35 @@ Install via the MADMIN Module Store:
    - Start Action: How the tunnel initiates
    - Close Action: What to do when the tunnel closes
 
+### Managing Firewall Rules
+
+Each Child SA has its own firewall with separate Inbound and Outbound policies:
+
+1. Click on a tunnel to expand it
+2. Go to the **Firewall** tab
+3. Select a Child SA from the tabs
+4. For each direction (Outbound/Inbound):
+   - Set **Default Policy**: ACCEPT (green) or DROP (red)
+   - Add specific rules with protocol, source, destination, port
+   - Drag rules to reorder priority
+5. Rules are applied immediately to iptables
+
+**Chain Structure:**
+- `IPSEC_{TunnelName}_{N}_OUT` - Outbound rules (local → remote)
+- `IPSEC_{TunnelName}_{N}_IN` - Inbound rules (remote → local)
+
 ### Managing Tunnels
 
 - **Start**: Click the play button to initiate the tunnel
 - **Stop**: Click the stop button to terminate the tunnel
 - **Edit**: Click the edit button to modify settings
 - **Delete**: Click the trash button to remove the tunnel
+
+### Traffic Statistics
+
+1. Click on a tunnel to view its details
+2. Go to the **Statistiche** tab
+3. View real-time traffic graphs with period selection (1h, 6h, 24h, 7d)
 
 ## Configuration Files
 
@@ -72,10 +96,19 @@ The module generates configuration files in `/etc/swanctl/conf.d/`:
 The module creates firewall chains:
 
 - `MOD_IPSEC_INPUT`: Allows IKE (UDP 500), NAT-T (UDP 4500), and ESP
-- `MOD_IPSEC_FORWARD`: Allows traffic between local and remote subnets
-- `MOD_IPSEC_NAT`: NAT rules if needed
+- `MOD_IPSEC_FORWARD`: Jump rules to per-Child-SA chains
+- `IPSEC_{Tunnel}_{N}_IN/OUT`: Per-Child-SA firewall chains with custom rules
+
+**Firewall Features:**
+- Separate default policies for IN and OUT traffic per Child SA
+- Rule ordering by drag-and-drop
+- Protocol filtering (TCP, UDP, ICMP, All)
+- Port and destination filtering
+- Enable/disable individual rules
 
 ## API Endpoints
+
+### Tunnel Management
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -87,10 +120,32 @@ The module creates firewall chains:
 | `/api/modules/strongswan/tunnels/{id}/start` | POST | Start tunnel |
 | `/api/modules/strongswan/tunnels/{id}/stop` | POST | Stop tunnel |
 | `/api/modules/strongswan/tunnels/{id}/status` | GET | Get real-time status |
+
+### Child SA Management
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
 | `/api/modules/strongswan/tunnels/{id}/children` | GET | List Child SAs |
 | `/api/modules/strongswan/tunnels/{id}/children` | POST | Add Child SA |
 | `/api/modules/strongswan/tunnels/{id}/children/{cid}` | PUT | Update Child SA |
 | `/api/modules/strongswan/tunnels/{id}/children/{cid}` | DELETE | Delete Child SA |
+
+### Firewall Management
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/modules/strongswan/tunnels/{tid}/children/{cid}/firewall/rules` | GET | List firewall rules |
+| `/api/modules/strongswan/tunnels/{tid}/children/{cid}/firewall/rules` | POST | Create firewall rule |
+| `/api/modules/strongswan/tunnels/{tid}/children/{cid}/firewall/rules/{rid}` | PATCH | Update firewall rule |
+| `/api/modules/strongswan/tunnels/{tid}/children/{cid}/firewall/rules/{rid}` | DELETE | Delete firewall rule |
+| `/api/modules/strongswan/tunnels/{tid}/children/{cid}/firewall/rules/order` | PUT | Reorder rules |
+| `/api/modules/strongswan/tunnels/{tid}/children/{cid}/firewall/policy` | PATCH | Update default policy (IN/OUT) |
+
+### Traffic Statistics
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/modules/strongswan/tunnels/{id}/traffic` | GET | Get traffic history |
 
 ## License
 
