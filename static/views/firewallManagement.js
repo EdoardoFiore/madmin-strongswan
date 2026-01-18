@@ -175,71 +175,29 @@ async function loadChildFirewall(tunnelId, child) {
         const rulesIn = rules.filter(r => r.direction === 'in' || r.direction === 'both');
 
         container.innerHTML = `
-            <!-- Default Policies -->
-            <div class="card mb-3">
-                <div class="card-body">
-                    <div class="row">
-                        <!-- Outbound Policy -->
-                        <div class="col-md-6 border-end">
-                            <div class="row align-items-center">
-                                <div class="col">
-                                    <h4 class="card-title mb-1">Default Outbound Policy</h4>
-                                    <p class="text-muted mb-0">
-                                        Per traffico locale → remoto non matchato
-                                    </p>
-                                </div>
-                                <div class="col-auto">
-                                    <div class="form-check form-switch form-check-lg">
-                                        <input class="form-check-input" type="checkbox" 
-                                               id="policy-out-${child.id}" 
-                                               ${child.firewall_policy_out === 'ACCEPT' ? 'checked' : ''}
-                                               onchange="togglePolicy('${tunnelId}', '${child.id}', this.checked, 'out')">
-                                        <label class="form-check-label" for="policy-out-${child.id}">
-                                            <strong id="policy-out-label-${child.id}" class="${child.firewall_policy_out === 'ACCEPT' ? 'text-success' : 'text-danger'}">
-                                                ${child.firewall_policy_out}
-                                            </strong>
-                                        </label>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <!-- Inbound Policy -->
-                        <div class="col-md-6">
-                            <div class="row align-items-center">
-                                <div class="col">
-                                    <h4 class="card-title mb-1">Default Inbound Policy</h4>
-                                    <p class="text-muted mb-0">
-                                        Per traffico remoto → locale non matchato
-                                    </p>
-                                </div>
-                                <div class="col-auto">
-                                    <div class="form-check form-switch form-check-lg">
-                                        <input class="form-check-input" type="checkbox" 
-                                               id="policy-in-${child.id}" 
-                                               ${child.firewall_policy_in === 'ACCEPT' ? 'checked' : ''}
-                                               onchange="togglePolicy('${tunnelId}', '${child.id}', this.checked, 'in')">
-                                        <label class="form-check-label" for="policy-in-${child.id}">
-                                            <strong id="policy-in-label-${child.id}" class="${child.firewall_policy_in === 'ACCEPT' ? 'text-success' : 'text-danger'}">
-                                                ${child.firewall_policy_in}
-                                            </strong>
-                                        </label>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            
             <!-- Outbound Rules -->
             <div class="card mb-3">
-                <div class="card-header">
-                    <h3 class="card-title">
+                <div class="card-header d-flex align-items-center">
+                    <h3 class="card-title mb-0">
                         <i class="ti ti-arrow-right me-1 text-blue"></i>
                         Regole Outbound (${escapeHtml(child.local_ts)} → ${escapeHtml(child.remote_ts)})
                     </h3>
-                    <div class="card-actions">
+                    <div class="ms-auto d-flex align-items-center gap-3">
+                        <div class="d-flex align-items-center gap-2">
+                            <span class="text-muted">Default:</span>
+                            <div class="btn-group" role="group">
+                                <input type="radio" class="btn-check" name="policy-out-${child.id}" 
+                                       id="policy-out-accept-${child.id}" value="ACCEPT"
+                                       ${child.firewall_policy_out === 'ACCEPT' ? 'checked' : ''}
+                                       onchange="togglePolicy('${tunnelId}', '${child.id}', true, 'out')">
+                                <label class="btn btn-outline-success btn-sm" for="policy-out-accept-${child.id}">ACCEPT</label>
+                                <input type="radio" class="btn-check" name="policy-out-${child.id}" 
+                                       id="policy-out-drop-${child.id}" value="DROP"
+                                       ${child.firewall_policy_out === 'DROP' ? 'checked' : ''}
+                                       onchange="togglePolicy('${tunnelId}', '${child.id}', false, 'out')">
+                                <label class="btn btn-outline-danger btn-sm" for="policy-out-drop-${child.id}">DROP</label>
+                            </div>
+                        </div>
                         <button class="btn btn-primary btn-sm" onclick="showRuleModal('${tunnelId}', '${child.id}', 'out')">
                             <i class="ti ti-plus me-1"></i>Aggiungi
                         </button>
@@ -252,12 +210,27 @@ async function loadChildFirewall(tunnelId, child) {
             
             <!-- Inbound Rules -->
             <div class="card">
-                <div class="card-header">
-                    <h3 class="card-title">
+                <div class="card-header d-flex align-items-center">
+                    <h3 class="card-title mb-0">
                         <i class="ti ti-arrow-left me-1 text-green"></i>
                         Regole Inbound (${escapeHtml(child.remote_ts)} → ${escapeHtml(child.local_ts)})
                     </h3>
-                    <div class="card-actions">
+                    <div class="ms-auto d-flex align-items-center gap-3">
+                        <div class="d-flex align-items-center gap-2">
+                            <span class="text-muted">Default:</span>
+                            <div class="btn-group" role="group">
+                                <input type="radio" class="btn-check" name="policy-in-${child.id}" 
+                                       id="policy-in-accept-${child.id}" value="ACCEPT"
+                                       ${child.firewall_policy_in === 'ACCEPT' ? 'checked' : ''}
+                                       onchange="togglePolicy('${tunnelId}', '${child.id}', true, 'in')">
+                                <label class="btn btn-outline-success btn-sm" for="policy-in-accept-${child.id}">ACCEPT</label>
+                                <input type="radio" class="btn-check" name="policy-in-${child.id}" 
+                                       id="policy-in-drop-${child.id}" value="DROP"
+                                       ${child.firewall_policy_in === 'DROP' ? 'checked' : ''}
+                                       onchange="togglePolicy('${tunnelId}', '${child.id}', false, 'in')">
+                                <label class="btn btn-outline-danger btn-sm" for="policy-in-drop-${child.id}">DROP</label>
+                            </div>
+                        </div>
                         <button class="btn btn-primary btn-sm" onclick="showRuleModal('${tunnelId}', '${child.id}', 'in')">
                             <i class="ti ti-plus me-1"></i>Aggiungi
                         </button>
@@ -535,15 +508,13 @@ window.togglePolicy = async function (tunnelId, childId, isAccept, type) {
             payload
         );
 
-        const label = document.getElementById(`policy-${type}-label-${childId}`);
-        label.textContent = policy;
-        label.className = isAccept ? 'text-success' : 'text-danger';
-
         const typeLabel = type === 'out' ? 'Outbound' : 'Inbound';
         showToast(`Policy ${typeLabel} impostata su ${policy}`, 'success');
     } catch (e) {
         showToast(e.message, 'error');
-        // Revert checkbox
-        document.getElementById(`policy-${type}-${childId}`).checked = !isAccept;
+        // Revert radio button selection
+        const revertId = isAccept ? `policy-${type}-drop-${childId}` : `policy-${type}-accept-${childId}`;
+        const revertEl = document.getElementById(revertId);
+        if (revertEl) revertEl.checked = true;
     }
 };

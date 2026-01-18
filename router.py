@@ -622,8 +622,15 @@ async def create_child_sa(
     )
     await run_in_threadpool(strongswan_service.save_tunnel_config, tunnel.name, config)
     
-    # Setup FORWARD rules
-    await run_in_threadpool(strongswan_service.setup_forward_rules, child.local_ts, child.remote_ts, tunnel.name)
+    # Setup firewall chains for this Child SA
+    all_children_result = await db.execute(
+        select(IpsecChildSa)
+        .where(IpsecChildSa.tunnel_id == tunnel.id)
+        .order_by(IpsecChildSa.name)
+        .options(selectinload(IpsecChildSa.firewall_rules))
+    )
+    all_children = all_children_result.scalars().all()
+    await strongswan_service.setup_tunnel_firewall_chains(tunnel, all_children, db)
     
     # Reload
     await run_in_threadpool(strongswan_service.load_all_connections)
@@ -670,10 +677,18 @@ async def update_child_sa(
     )
     tunnel = result.scalar_one_or_none()
     
-    # Remove old FORWARD rules if TS changed
+    # Refresh firewall chains if traffic selectors changed
     if data.local_ts or data.remote_ts:
-        await run_in_threadpool(strongswan_service.remove_forward_rules, old_local_ts, old_remote_ts)
-        await run_in_threadpool(strongswan_service.setup_forward_rules, child.local_ts, child.remote_ts, tunnel.name)
+        # Full refresh to handle any index changes
+        all_children_result = await db.execute(
+            select(IpsecChildSa)
+            .where(IpsecChildSa.tunnel_id == tunnel.id)
+            .order_by(IpsecChildSa.name)
+            .options(selectinload(IpsecChildSa.firewall_rules))
+        )
+        current_children = all_children_result.scalars().all()
+        await strongswan_service.remove_tunnel_firewall_chains(tunnel, current_children)
+        await strongswan_service.setup_tunnel_firewall_chains(tunnel, current_children, db)
     
     # Regenerate config
     child_sas_data = [
