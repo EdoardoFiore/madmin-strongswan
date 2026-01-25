@@ -275,6 +275,33 @@ async function loadChildFirewall(tunnelId, child) {
 }
 
 /**
+ * Refresh child data from API and reload firewall UI
+ * This ensures policy radio buttons show the correct current state
+ */
+async function refreshAndReloadChildFirewall(tunnelId, childId) {
+    try {
+        // Fetch fresh children data from API
+        const freshChildren = await apiGet(`/modules/strongswan/tunnels/${tunnelId}/children`);
+
+        // Update local cache
+        currentChildren = freshChildren;
+
+        // Find the updated child
+        const child = freshChildren.find(c => c.id === childId);
+        if (child) {
+            await loadChildFirewall(tunnelId, child);
+        }
+    } catch (e) {
+        console.error('Failed to refresh child data:', e);
+        // Fallback: try to reload with cached data
+        const cachedChild = currentChildren.find(c => c.id === childId);
+        if (cachedChild) {
+            await loadChildFirewall(tunnelId, cachedChild);
+        }
+    }
+}
+
+/**
  * Render rules table
  */
 function renderRulesTable(rules, tunnelId, childId, direction) {
@@ -430,8 +457,8 @@ async function saveRule() {
         // Close modal and reload
         bootstrap.Modal.getInstance(document.getElementById('firewall-rule-modal')).hide();
 
-        const child = currentChildren.find(c => c.id === childId);
-        loadChildFirewall(tunnelId, child);
+        // Refresh child data from API to get updated policy values
+        await refreshAndReloadChildFirewall(tunnelId, childId);
 
     } catch (e) {
         showToast(e.message, 'error');
@@ -461,8 +488,8 @@ window.deleteRule = async function (tunnelId, childId, ruleId) {
             await apiDelete(`/modules/strongswan/tunnels/${tunnelId}/children/${childId}/firewall/rules/${ruleId}`);
             showToast('Regola eliminata', 'success');
 
-            const child = currentChildren.find(c => c.id === childId);
-            loadChildFirewall(tunnelId, child);
+            // Refresh child data from API to get updated policy values
+            await refreshAndReloadChildFirewall(tunnelId, childId);
         } catch (e) {
             showToast(e.message, 'error');
         }
@@ -489,9 +516,8 @@ async function reorderRules(tunnelId, childId, direction) {
         showToast('Ordine aggiornato', 'success');
     } catch (e) {
         showToast('Errore nell\'aggiornamento dell\'ordine', 'error');
-        // Reload to restore correct order
-        const child = currentChildren.find(c => c.id === childId);
-        loadChildFirewall(tunnelId, child);
+        // Reload to restore correct order with fresh data
+        await refreshAndReloadChildFirewall(tunnelId, childId);
     }
 }
 
