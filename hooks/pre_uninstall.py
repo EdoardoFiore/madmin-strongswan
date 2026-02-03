@@ -88,6 +88,29 @@ async def run():
         else:
             logger.debug(f"Chain {chain} may not exist or has references")
     
+    # 3b. Remove per-Child SA chains (IPSEC_*_IN, IPSEC_*_OUT)
+    logger.info("Removing per-Child SA firewall chains...")
+    try:
+        result = subprocess.run(
+            ['iptables', '-t', 'filter', '-L', '-n'],
+            capture_output=True,
+            text=True
+        )
+        for line in result.stdout.split('\n'):
+            if 'Chain IPSEC_' in line and ('_IN' in line or '_OUT' in line):
+                chain_name = line.split()[1]
+                # Don't try to delete module chains (already handled above)
+                if chain_name.startswith('MOD_IPSEC'):
+                    continue
+                # First remove any jump rules to this chain
+                _remove_references_to_chain("filter", chain_name)
+                # Then flush and delete
+                subprocess.run(['iptables', '-t', 'filter', '-F', chain_name], capture_output=True)
+                subprocess.run(['iptables', '-t', 'filter', '-X', chain_name], capture_output=True)
+                logger.info(f"Removed Child SA chain: {chain_name}")
+    except Exception as e:
+        logger.warning(f"Error removing Child SA chains: {e}")
+    
     # 4. Remove MADMIN-managed configuration files
     logger.info("Removing MADMIN configuration files...")
     conf_dir = Path("/etc/swanctl/conf.d")
@@ -177,3 +200,27 @@ async def run():
         logger.info("strongSwan pre-uninstall completed successfully")
     
     return True
+
+
+def _remove_references_to_chain(table: str, chain_name: str):
+    """Remove all jump rules pointing to a chain from all other chains."""
+    try:
+        # Get all rules
+        result = subprocess.run(
+            ["iptables", "-t", table, "-S"],
+            capture_output=True,
+            text=True
+        )
+        
+        for line in result.stdout.split('\n'):
+            if f"-j {chain_name}" in line and line.startswith('-A '):
+                # Extract source chain from -A CHAIN_NAME ...
+                parts = line.split()
+                if len(parts) >= 2:
+                    source_chain = parts[1]
+                    # Build delete command by replacing -A with -D
+                    delete_cmd = ["iptables", "-t", table] + ["-D" if p == "-A" else p for p in parts]
+                    subprocess.run(delete_cmd, capture_output=True)
+                    logger.debug(f"Removed jump from {source_chain} to {chain_name}")
+    except Exception as e:
+        logger.debug(f"Error removing references to {chain_name}: {e}")
