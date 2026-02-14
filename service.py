@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import List, Dict, Optional, Any
 from datetime import datetime
 import uuid
+from core.firewall import iptables as core_iptables
 
 logger = logging.getLogger(__name__)
 
@@ -65,16 +66,17 @@ class StrongSwanService:
             raise
     
     def _run_iptables(self, table: str, args: List[str], suppress_errors: bool = False) -> bool:
-        """Execute an iptables command."""
-        cmd = ['iptables', '-t', table] + args
+        """Execute an iptables command using core wrapper."""
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode != 0 and not suppress_errors:
-                logger.warning(f"iptables command failed: {' '.join(cmd)}: {result.stderr}")
-                return False
-            return result.returncode == 0
-        except FileNotFoundError:
-            logger.error("iptables not found")
+            # Core returns (success, output), and raises IptablesError on failure if not suppressed
+            success, _ = core_iptables._run_iptables(table, args, suppress_errors=suppress_errors)
+            return success
+        except core_iptables.IptablesError:
+            # Error already logged by core
+            return False
+        except Exception as e:
+            if not suppress_errors:
+                logger.error(f"Unexpected iptables error: {e}")
             return False
     
     # --- Config File Generation ---
